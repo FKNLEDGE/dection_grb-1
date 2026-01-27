@@ -1171,6 +1171,33 @@ def fine_tune_model(
     return history
 
 
+def convert_numpy_types(obj: Any) -> Any:
+    """
+    递归转换 NumPy 类型为 Python 原生类型
+    Convert NumPy types to Python native types recursively
+
+    Args:
+        obj: 需要转换的对象
+
+    Returns:
+        转换后的对象
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    else:
+        return obj
+
+
 def save_training_results(
     model_name: str,
     history: Any,
@@ -1228,6 +1255,9 @@ def save_training_results(
 
     if test_results:
         results['test_results'] = test_results
+
+    # 转换 NumPy 类型为 Python 原生类型
+    results = convert_numpy_types(results)
 
     # 保存为JSON
     results_path = os.path.join(model_output_dir, 'results.json')
