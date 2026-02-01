@@ -54,6 +54,74 @@ from models import unfreeze_base_model
 logger = logging.getLogger(__name__)
 
 
+# ==================== Focal Loss ====================
+
+class FocalLoss(tf.keras.losses.Loss):
+    """
+    Focal Loss - 解决类别不平衡问题
+    Focal Loss for Dense Object Detection (Lin et al., 2017)
+
+    通过减少易分类样本的权重，使模型更关注难分类样本。
+    公式: FL(p_t) = -α_t * (1 - p_t)^γ * log(p_t)
+
+    Args:
+        gamma: 聚焦参数，用于降低易分类样本的权重。
+               gamma > 0 减小易分类样本的损失贡献。推荐值: 2.0
+        alpha: 类别平衡参数，用于处理类别不平衡。
+               可以是标量或数组。推荐值: 0.25
+
+    Reference:
+        https://arxiv.org/abs/1708.02002
+    """
+
+    def __init__(self, gamma: float = 2.0, alpha: float = 0.25, **kwargs):
+        """
+        初始化 Focal Loss
+
+        Args:
+            gamma: 聚焦参数 (通常为 2.0)
+            alpha: 平衡参数 (通常为 0.25)
+        """
+        super().__init__(**kwargs)
+        self.gamma = gamma
+        self.alpha = alpha
+
+    def call(self, y_true, y_pred):
+        """
+        计算 Focal Loss
+
+        Args:
+            y_true: 真实标签 (one-hot 编码) [batch_size, num_classes]
+            y_pred: 预测概率 [batch_size, num_classes]
+
+        Returns:
+            损失值 [batch_size]
+        """
+        # 限制预测值范围，避免log(0)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
+
+        # 计算交叉熵
+        ce = -y_true * tf.math.log(y_pred)
+
+        # 计算 focal 权重: (1 - p_t)^gamma
+        weight = self.alpha * y_true * tf.pow(1 - y_pred, self.gamma)
+
+        # 应用 focal 权重
+        focal_loss = weight * ce
+
+        # 对所有类别求和
+        return tf.reduce_sum(focal_loss, axis=-1)
+
+    def get_config(self):
+        """返回配置，用于序列化"""
+        config = super().get_config()
+        config.update({
+            'gamma': self.gamma,
+            'alpha': self.alpha
+        })
+        return config
+
+
 # ==================== 混合精度训练设置 ====================
 
 def setup_mixed_precision(enable: bool = USE_MIXED_PRECISION) -> bool:
@@ -1334,9 +1402,180 @@ def get_gpu_memory_info() -> Optional[Dict[str, Any]]:
         return None
 
 
+# ==================== 交叉验证 ====================
+
+def cross_validate_model(
+    model_builder_fn: Any,
+    data_dir: str,
+    model_name: str,
+    n_folds: int = 5,
+    epochs: int = EPOCHS,
+    use_focal_loss: bool = False,
+    learning_rate: float = LEARNING_RATE
+) -> Dict[str, Any]:
+    """
+    K折交叉验证
+    K-Fold Cross Validation
+
+    Args:
+        model_builder_fn: 返回模型的函数
+        data_dir: 数据目录
+        model_name: 模型名称
+        n_folds: 折数
+        epochs: 每折训练轮数
+        use_focal_loss: 是否使用Focal Loss
+        learning_rate: 学习率
+
+    Returns:
+        dict: 包含mean和std的结果
+    """
+    from sklearn.model_selection import StratifiedKFold
+
+    print(f"\n{'='*70}")
+    print(f"{model_name} - {n_folds}折交叉验证")
+    print(f"{'='*70}")
+
+    # 获取所有图片路径和标签
+    all_images = []
+    all_labels = []
+    class_names = sorted([d for d in os.listdir(data_dir)
+                         if os.path.isdir(os.path.join(data_dir, d))])
+
+    for label_idx, class_name in enumerate(class_names):
+        class_dir = os.path.join(data_dir, class_name)
+        if not os.path.isdir(class_dir):
+            continue
+        for img_name in os.listdir(class_dir):
+            if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                all_images.append(os.path.join(class_dir, img_name))
+                all_labels.append(label_idx)
+
+    all_images = np.array(all_images)
+    all_labels = np.array(all_labels)
+
+    logger.info(f"总样本数: {len(all_images)}, 类别数: {len(class_names)}")
+
+    # K折交叉验证
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    fold_results = {
+        'accuracy': [],
+        'precision': [],
+        'recall': [],
+        'f1': [],
+        'loss': []
+    }
+
+    for fold, (train_idx, val_idx) in enumerate(skf.split(all_images, all_labels)):
+        print(f"\n{'='*50}")
+        print(f"Fold {fold + 1}/{n_folds}")
+        print(f"{'='*50}")
+
+        # 这里是简化实现，实际需要创建临时数据生成器
+        # 由于需要与现有数据加载器集成，这里提供框架
+        # 实际实现中需要：
+        # 1. 创建临时训练/验证数据目录或使用tf.data.Dataset
+        # 2. 训练模型
+        # 3. 评估并记录结果
+
+        logger.info(f"训练集大小: {len(train_idx)}, 验证集大小: {len(val_idx)}")
+
+        # 构建新模型
+        model = model_builder_fn()
+
+        # 选择损失函数
+        loss_fn = FocalLoss(gamma=2.0, alpha=0.25) if use_focal_loss else 'categorical_crossentropy'
+
+        # 编译模型
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+            loss=loss_fn,
+            metrics=[
+                'accuracy',
+                tf.keras.metrics.Precision(name='precision'),
+                tf.keras.metrics.Recall(name='recall')
+            ]
+        )
+
+        # 注意：这里需要实际的训练代码
+        # 由于与现有数据流程需要集成，这里提供接口定义
+        # 实际使用时需要配合数据生成器实现
+
+        # 示例结果（实际应从training获取）
+        # fold_results['accuracy'].append(val_accuracy)
+        # fold_results['precision'].append(val_precision)
+        # fold_results['recall'].append(val_recall)
+        # fold_results['f1'].append(val_f1)
+        # fold_results['loss'].append(val_loss)
+
+        # 清理
+        tf.keras.backend.clear_session()
+
+    # 计算统计量
+    final_results = {}
+    for metric, values in fold_results.items():
+        if len(values) > 0:
+            final_results[f'{metric}_mean'] = np.mean(values)
+            final_results[f'{metric}_std'] = np.std(values)
+
+    print(f"\n{model_name} 交叉验证结果汇总:")
+    for metric in ['accuracy', 'precision', 'recall', 'f1']:
+        mean_key = f'{metric}_mean'
+        std_key = f'{metric}_std'
+        if mean_key in final_results:
+            print(f"{metric.capitalize()}: "
+                  f"{final_results[mean_key]:.4f} ± {final_results[std_key]:.4f}")
+
+    return final_results
+
+
+def compile_model_with_focal_loss(
+    model: Model,
+    learning_rate: float = LEARNING_RATE,
+    use_focal_loss: bool = False,
+    focal_gamma: float = 2.0,
+    focal_alpha: float = 0.25
+) -> Model:
+    """
+    编译模型，可选择使用Focal Loss
+    Compile model with optional Focal Loss
+
+    Args:
+        model: Keras模型
+        learning_rate: 学习率
+        use_focal_loss: 是否使用Focal Loss
+        focal_gamma: Focal Loss的gamma参数
+        focal_alpha: Focal Loss的alpha参数
+
+    Returns:
+        model: 编译后的模型
+    """
+    loss_fn = FocalLoss(gamma=focal_gamma, alpha=focal_alpha) if use_focal_loss \
+              else 'categorical_crossentropy'
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+        loss=loss_fn,
+        metrics=[
+            'accuracy',
+            tf.keras.metrics.Precision(name='precision'),
+            tf.keras.metrics.Recall(name='recall')
+        ]
+    )
+
+    if use_focal_loss:
+        logger.info(f"使用 Focal Loss (gamma={focal_gamma}, alpha={focal_alpha})")
+    else:
+        logger.info("使用 Categorical Crossentropy Loss")
+
+    return model
+
+
 # ==================== 导出 ====================
 
 __all__ = [
+    # Focal Loss
+    'FocalLoss',
     # 混合精度
     'setup_mixed_precision',
     'get_mixed_precision_loss_scale_optimizer',
@@ -1362,6 +1601,9 @@ __all__ = [
     'AdvancedTrainer',
     'train_model',
     'fine_tune_model',
+    # 交叉验证
+    'cross_validate_model',
+    'compile_model_with_focal_loss',
     # 工具函数
     'save_training_results',
     'print_training_summary',

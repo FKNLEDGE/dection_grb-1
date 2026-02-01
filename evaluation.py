@@ -36,6 +36,22 @@ from config import OUTPUT_DIR, CLASS_NAMES, ensure_dir
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# 尝试导入scipy用于统计检验
+try:
+    from scipy import stats
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    logger.warning("scipy未安装，统计显著性检验功能将不可用")
+
+# 尝试导入cv2用于Grad-CAM
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    logger.warning("opencv-python未安装，Grad-CAM可视化功能将不可用")
+
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -520,3 +536,347 @@ Model & Accuracy & Precision & Recall & F1 & Size(MB) & Time(ms) \\\\
     print("\nLaTeX表格代码:")
     print(latex)
     return latex
+
+
+# ==================== Grad-CAM 可视化 ====================
+
+class GradCAM:
+    """
+    Grad-CAM: 梯度加权类激活映射
+    Grad-CAM: Gradient-weighted Class Activation Mapping
+
+    用于可视化卷积神经网络的决策过程，帮助理解模型关注的区域。
+
+    Reference:
+        Selvaraju et al., "Grad-CAM: Visual Explanations from Deep Networks
+        via Gradient-based Localization", ICCV 2017
+        https://arxiv.org/abs/1610.02391
+    """
+
+    def __init__(self, model: Model, layer_name: Optional[str] = None):
+        """
+        初始化 Grad-CAM
+
+        Args:
+            model: 训练好的模型
+            layer_name: 要可视化的卷积层名称。如果为None，自动选择最后一个卷积层
+        """
+        self.model = model
+        self.layer_name = layer_name
+
+        # 如果未指定层名，自动找最后一个卷积层
+        if layer_name is None:
+            self.layer_name = self._find_last_conv_layer()
+
+        if self.layer_name is None:
+            raise ValueError("无法找到卷积层。请手动指定layer_name")
+
+        logger.info(f"Grad-CAM将使用层: {self.layer_name}")
+
+        # 创建梯度模型
+        try:
+            conv_layer = model.get_layer(self.layer_name)
+            self.grad_model = tf.keras.Model(
+                inputs=model.inputs,
+                outputs=[conv_layer.output, model.output]
+            )
+        except Exception as e:
+            raise ValueError(f"无法创建Grad-CAM模型: {e}")
+
+    def _find_last_conv_layer(self) -> Optional[str]:
+        """自动查找最后一个卷积层"""
+        for layer in reversed(self.model.layers):
+            # 检查是否是卷积层
+            if 'conv' in layer.name.lower() or isinstance(layer, tf.keras.layers.Conv2D):
+                return layer.name
+
+            # 如果是嵌套模型，递归查找
+            if hasattr(layer, 'layers'):
+                for sublayer in reversed(layer.layers):
+                    if 'conv' in sublayer.name.lower() or isinstance(sublayer, tf.keras.layers.Conv2D):
+                        return sublayer.name
+
+        return None
+
+    def compute_heatmap(
+        self,
+        image: np.ndarray,
+        class_idx: Optional[int] = None,
+        eps: float = 1e-8
+    ) -> np.ndarray:
+        """
+        计算热力图
+        Compute heatmap
+
+        Args:
+            image: 输入图像 [1, H, W, C] 或 [H, W, C]
+            class_idx: 目标类别索引。如果为None，使用预测类别
+            eps: 防止除零的小常数
+
+        Returns:
+            heatmap: 热力图 [H, W]，值范围 [0, 1]
+        """
+        # 确保图像维度正确
+        if len(image.shape) == 3:
+            image = np.expand_dims(image, axis=0)
+
+        # 使用GradientTape记录梯度
+        with tf.GradientTape() as tape:
+            # 前向传播
+            conv_output, predictions = self.grad_model(image)
+
+            # 如果未指定类别，使用预测类别
+            if class_idx is None:
+                class_idx = tf.argmax(predictions[0])
+
+            # 获取目标类别的输出
+            class_output = predictions[:, class_idx]
+
+        # 计算梯度
+        grads = tape.gradient(class_output, conv_output)
+
+        # 全局平均池化，获取每个通道的权重
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+        # 获取卷积输出
+        conv_output = conv_output[0]
+
+        # 加权求和
+        heatmap = conv_output @ pooled_grads[..., tf.newaxis]
+        heatmap = tf.squeeze(heatmap)
+
+        # ReLU激活（只保留正值）
+        heatmap = tf.maximum(heatmap, 0)
+
+        # 归一化到 [0, 1]
+        heatmap_max = tf.reduce_max(heatmap)
+        if heatmap_max > eps:
+            heatmap = heatmap / heatmap_max
+
+        return heatmap.numpy()
+
+    def overlay_heatmap(
+        self,
+        image: np.ndarray,
+        heatmap: np.ndarray,
+        alpha: float = 0.4,
+        colormap: int = None
+    ) -> np.ndarray:
+        """
+        将热力图叠加到原图
+        Overlay heatmap on original image
+
+        Args:
+            image: 原始图像 [H, W, C]，值范围 [0, 1] 或 [0, 255]
+            heatmap: 热力图 [h, w]，值范围 [0, 1]
+            alpha: 热力图透明度
+            colormap: OpenCV colormap，默认为 COLORMAP_JET
+
+        Returns:
+            superimposed: 叠加后的图像 [H, W, C]
+        """
+        if not CV2_AVAILABLE:
+            logger.warning("opencv-python未安装，无法叠加热力图")
+            return image
+
+        if colormap is None:
+            colormap = cv2.COLORMAP_JET
+
+        # 调整热力图大小以匹配原图
+        heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]))
+
+        # 转换为0-255范围
+        heatmap = np.uint8(255 * heatmap)
+
+        # 应用颜色映射
+        heatmap = cv2.applyColorMap(heatmap, colormap)
+
+        # 确保原图是0-255范围
+        if image.max() <= 1.0:
+            image = np.uint8(255 * image)
+
+        # 叠加
+        superimposed = cv2.addWeighted(image, 1 - alpha, heatmap, alpha, 0)
+
+        return superimposed
+
+
+def visualize_gradcam(
+    model: Model,
+    test_generator: Any,
+    class_names: List[str],
+    model_name: str,
+    num_samples: int = 12,
+    output_dir: str = OUTPUT_DIR,
+    layer_name: Optional[str] = None
+) -> None:
+    """
+    批量生成Grad-CAM可视化
+    Batch generate Grad-CAM visualizations
+
+    Args:
+        model: 训练好的模型
+        test_generator: 测试数据生成器
+        class_names: 类别名称列表
+        model_name: 模型名称
+        num_samples: 可视化样本数量
+        output_dir: 输出目录
+        layer_name: 目标卷积层名称（可选）
+    """
+    if not CV2_AVAILABLE:
+        logger.warning("opencv-python未安装，跳过Grad-CAM可视化")
+        return
+
+    print(f"\n生成 {model_name} 的 Grad-CAM 可视化...")
+
+    try:
+        # 创建 Grad-CAM 对象
+        gradcam = GradCAM(model, layer_name=layer_name)
+    except Exception as e:
+        logger.error(f"Grad-CAM初始化失败: {e}")
+        return
+
+    # 获取测试样本
+    test_generator.reset()
+    batch = next(test_generator)
+    images, labels = batch[0][:num_samples], batch[1][:num_samples]
+
+    # 获取预测
+    predictions = model.predict(images, verbose=0)
+
+    # 创建子图
+    n_cols = 4
+    n_rows = (num_samples + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows))
+    axes = axes.flatten() if n_rows > 1 else [axes] if n_cols == 1 else axes
+
+    for i in range(num_samples):
+        img = images[i]
+        true_idx = np.argmax(labels[i])
+        pred_idx = np.argmax(predictions[i])
+
+        # 计算热力图
+        heatmap = gradcam.compute_heatmap(np.expand_dims(img, 0), pred_idx)
+
+        # 叠加热力图
+        overlay = gradcam.overlay_heatmap(img, heatmap)
+
+        # 显示
+        axes[i].imshow(overlay)
+
+        # 设置标题颜色（正确=绿色，错误=红色）
+        color = 'green' if true_idx == pred_idx else 'red'
+        conf = predictions[i][pred_idx]
+        axes[i].set_title(
+            f'True: {class_names[true_idx]}\n'
+            f'Pred: {class_names[pred_idx]} ({conf:.2f})',
+            color=color, fontsize=9
+        )
+        axes[i].axis('off')
+
+    # 隐藏多余的子图
+    for i in range(num_samples, len(axes)):
+        axes[i].axis('off')
+
+    plt.suptitle(f'{model_name} - Grad-CAM Visualization', fontsize=14)
+    plt.tight_layout()
+
+    # 保存
+    model_output_dir = ensure_dir(os.path.join(output_dir, model_name))
+    save_path = os.path.join(model_output_dir, f'{model_name}_gradcam.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"Grad-CAM可视化已保存: {save_path}")
+
+
+# ==================== 统计显著性检验 ====================
+
+def statistical_significance_test(
+    results1: List[float],
+    results2: List[float],
+    model1_name: str,
+    model2_name: str,
+    test_type: str = 'paired_t'
+) -> Dict[str, float]:
+    """
+    统计显著性检验
+    Statistical Significance Test
+
+    比较两个模型的性能差异是否显著
+
+    Args:
+        results1: 模型1的K折结果列表
+        results2: 模型2的K折结果列表
+        model1_name: 模型1名称
+        model2_name: 模型2名称
+        test_type: 检验类型 ('paired_t', 'wilcoxon')
+
+    Returns:
+        dict: 包含统计量和p值
+    """
+    if not SCIPY_AVAILABLE:
+        logger.warning("scipy未安装，无法进行统计显著性检验")
+        return {}
+
+    results1 = np.array(results1)
+    results2 = np.array(results2)
+
+    if len(results1) != len(results2):
+        raise ValueError(f"结果长度不匹配: {len(results1)} vs {len(results2)}")
+
+    print(f"\n{'='*70}")
+    print(f"统计显著性检验: {model1_name} vs {model2_name}")
+    print(f"{'='*70}")
+
+    if test_type == 'paired_t':
+        # 配对t检验
+        t_stat, p_value = stats.ttest_rel(results1, results2)
+        test_name = "配对t检验 (Paired t-test)"
+        statistic_name = "t统计量"
+
+    elif test_type == 'wilcoxon':
+        # Wilcoxon符号秩检验（非参数）
+        try:
+            w_stat, p_value = stats.wilcoxon(results1, results2)
+            t_stat = w_stat
+            test_name = "Wilcoxon符号秩检验 (Wilcoxon signed-rank test)"
+            statistic_name = "W统计量"
+        except Exception as e:
+            logger.warning(f"Wilcoxon检验失败: {e}，使用t检验")
+            t_stat, p_value = stats.ttest_rel(results1, results2)
+            test_name = "配对t检验 (Paired t-test)"
+            statistic_name = "t统计量"
+
+    else:
+        raise ValueError(f"未知的检验类型: {test_type}")
+
+    # 打印结果
+    print(f"检验方法: {test_name}")
+    print(f"{model1_name} 结果: {results1}")
+    print(f"{model2_name} 结果: {results2}")
+    print(f"\n{model1_name} 平均值: {np.mean(results1):.4f} ± {np.std(results1):.4f}")
+    print(f"{model2_name} 平均值: {np.mean(results2):.4f} ± {np.std(results2):.4f}")
+    print(f"\n{statistic_name}: {t_stat:.4f}")
+    print(f"p值: {p_value:.4f}")
+
+    # 判断显著性
+    alpha = 0.05
+    if p_value < alpha:
+        print(f"\n结论: 差异显著 (p < {alpha})")
+        if np.mean(results1) > np.mean(results2):
+            print(f"      {model1_name} 显著优于 {model2_name}")
+        else:
+            print(f"      {model2_name} 显著优于 {model1_name}")
+    else:
+        print(f"\n结论: 差异不显著 (p >= {alpha})")
+
+    print(f"{'='*70}")
+
+    return {
+        'statistic': float(t_stat),
+        'p_value': float(p_value),
+        'test_type': test_type,
+        'mean_diff': float(np.mean(results1) - np.mean(results2)),
+        'significant': p_value < alpha
+    }
