@@ -138,14 +138,36 @@ EMA_DECAY: float = 0.999           # EMA衰减率 (推荐0.999-0.9999)
 
 
 # ==================== 实验对比模型 ====================
-MODELS_TO_COMPARE: List[str] = ['MobileNetV2', 'ResNet50', 'VGG16']
+# 更新：添加了DenseNet121和EfficientNetB0，以及CBAM增强模型
+MODELS_TO_COMPARE: List[str] = [
+    'MobileNetV2',
+    'MobileNetV2_CBAM',
+    'VGG16',
+    'DenseNet121',
+    'EfficientNetB0'
+]
 
 # 各模型的分类头配置
 MODEL_HEAD_CONFIG: Dict[str, Dict[str, Any]] = {
     'MobileNetV2': {'dense_units': [128], 'dropout_rates': [0.5, 0.25]},
     'ResNet50': {'dense_units': [256], 'dropout_rates': [0.5, 0.25]},
     'VGG16': {'dense_units': [512, 256], 'dropout_rates': [0.5, 0.25, 0.25]},
+    'DenseNet121': {'dense_units': [256], 'dropout_rates': [0.5, 0.25]},
+    'EfficientNetB0': {'dense_units': [128], 'dropout_rates': [0.5, 0.25]},
 }
+
+# ==================== 消融实验配置 ====================
+# 消融实验：验证CBAM和Focal Loss各自的贡献
+# 格式: (模型名称, 是否使用Focal Loss, 配置描述)
+ABLATION_MODELS: List[tuple] = [
+    ('MobileNetV2', False, 'Baseline'),
+    ('MobileNetV2_CBAM', False, '+ CBAM'),
+    ('MobileNetV2', True, '+ Focal Loss'),
+    ('MobileNetV2_CBAM', True, '+ CBAM + Focal Loss (Proposed)'),
+]
+
+# ==================== 交叉验证配置 ====================
+N_FOLDS: int = 5  # K折交叉验证的折数
 
 
 # ==================== 随机种子 ====================
@@ -181,6 +203,8 @@ __all__ = [
     'USE_EMA', 'EMA_DECAY',
     # 实验
     'MODELS_TO_COMPARE', 'MODEL_HEAD_CONFIG',
+    # 消融实验
+    'ABLATION_MODELS', 'N_FOLDS',
     # 随机种子
     'RANDOM_SEED',
 ]

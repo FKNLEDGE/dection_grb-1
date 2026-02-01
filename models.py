@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Any, Type, Tuple, Union
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, Model
-from tensorflow.keras.applications import MobileNetV2, ResNet50, VGG16
+from tensorflow.keras.applications import MobileNetV2, ResNet50, VGG16, DenseNet121, EfficientNetB0
 from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 
@@ -342,6 +342,8 @@ BASE_MODEL_CLASSES: Dict[str, Type] = {
     'MobileNetV2': MobileNetV2,
     'ResNet50': ResNet50,
     'VGG16': VGG16,
+    'DenseNet121': DenseNet121,
+    'EfficientNetB0': EfficientNetB0,
 }
 
 
@@ -1100,6 +1102,50 @@ def build_vgg16(
     return build_transfer_model('VGG16', num_classes, input_shape, freeze_base, config)
 
 
+def build_densenet121(
+    num_classes: int = NUM_CLASSES,
+    input_shape: tuple = IMG_SHAPE,
+    freeze_base: bool = FREEZE_BASE,
+    dropout_rate: float = DROPOUT_RATE
+) -> Model:
+    """
+    构建基于DenseNet121的迁移学习模型
+    Build DenseNet121-based transfer learning model
+
+    DenseNet121特点:
+    - 密集连接 (Dense Connections)
+    - 特征复用，减少参数量
+    - 参数量 (~8M), 性能优秀
+    """
+    config = {
+        'dense_units': [256],
+        'dropout_rates': [dropout_rate, dropout_rate / 2]
+    }
+    return build_transfer_model('DenseNet121', num_classes, input_shape, freeze_base, config)
+
+
+def build_efficientnet_b0(
+    num_classes: int = NUM_CLASSES,
+    input_shape: tuple = IMG_SHAPE,
+    freeze_base: bool = FREEZE_BASE,
+    dropout_rate: float = DROPOUT_RATE
+) -> Model:
+    """
+    构建基于EfficientNet-B0的迁移学习模型
+    Build EfficientNet-B0-based transfer learning model
+
+    EfficientNet-B0特点:
+    - 复合缩放策略 (Compound Scaling)
+    - 高效的网络架构搜索
+    - 参数量小 (~5.3M), 性能卓越
+    """
+    config = {
+        'dense_units': [128],
+        'dropout_rates': [dropout_rate, dropout_rate / 2]
+    }
+    return build_transfer_model('EfficientNetB0', num_classes, input_shape, freeze_base, config)
+
+
 def build_model(model_name: str, num_classes: int = NUM_CLASSES, **kwargs) -> Model:
     """
     根据模型名称构建模型
@@ -1107,7 +1153,7 @@ def build_model(model_name: str, num_classes: int = NUM_CLASSES, **kwargs) -> Mo
 
     Args:
         model_name: 模型名称
-            - 标准模型: 'MobileNetV2', 'ResNet50', 'VGG16'
+            - 标准模型: 'MobileNetV2', 'ResNet50', 'VGG16', 'DenseNet121', 'EfficientNetB0'
             - 注意力模型: 'MobileNetV2_CBAM', 'MobileNetV2_SE'
         num_classes: 分类类别数
         **kwargs: 其他参数
@@ -1116,9 +1162,11 @@ def build_model(model_name: str, num_classes: int = NUM_CLASSES, **kwargs) -> Mo
         model: Keras模型
     """
     # 检查是否是带注意力的模型
-    if model_name.upper() == 'MOBILENETV2_CBAM':
+    model_name_upper = model_name.upper().replace('-', '_').replace(' ', '_')
+
+    if model_name_upper == 'MOBILENETV2_CBAM':
         return build_mobilenetv2_cbam(num_classes=num_classes, **kwargs)
-    elif model_name.upper() == 'MOBILENETV2_SE':
+    elif model_name_upper == 'MOBILENETV2_SE':
         return build_mobilenetv2_se(num_classes=num_classes, **kwargs)
     else:
         return build_transfer_model(model_name, num_classes, **kwargs)
