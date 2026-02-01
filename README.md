@@ -27,11 +27,14 @@ garbage_classification/
 ├── evaluation.py          # 评估与可视化
 ├── ensemble.py            # 模型集成模块（投票、堆叠、快照集成等）
 ├── main.py                # 主实验脚本
-├── garbage_classification.ipynb  # Jupyter Notebook 版本
+├── garbage_classification_complete.ipynb  # ⭐ 完整Colab Notebook（推荐）
+├── garbage_classification.ipynb  # 原版 Jupyter Notebook
 ├── notebook_version.py    # Jupyter/Colab Python 脚本版本
 ├── download_data.py       # 数据集自动下载脚本
+├── quick_test.py          # 快速测试脚本
 ├── requirements.txt       # 依赖包
 ├── README.md              # 说明文档
+├── COLAB_GUIDE.md         # ⭐ Google Colab 详细使用指南
 │
 ├── data/                  # 数据集目录（需下载）
 │   └── garbage_classification/
@@ -174,6 +177,45 @@ tensorboard --logdir=logs/
 
 本项目提供专门的 Jupyter Notebook 版本，方便在交互式环境中运行。
 
+### 🚀 在 Google Colab 中运行（推荐）
+
+**一键运行完整项目：**
+
+1. 打开 [Google Colab](https://colab.research.google.com)
+
+2. 选择 "文件" → "上传笔记本" → 上传 `garbage_classification_complete.ipynb` 文件
+
+3. 按照 Notebook 中的步骤操作：
+   - 配置 Kaggle API（上传 kaggle.json）
+   - 自动下载数据集
+   - 运行完整训练流程
+   - 查看结果和可视化
+
+**Notebook 功能：**
+- ✅ 完整的环境配置
+- ✅ 自动数据下载和预处理
+- ✅ 多模型对比训练
+- ✅ 实时结果可视化
+- ✅ 一键下载实验结果
+
+**快速测试（3个epoch）：**
+```python
+from main import run_quick_test
+results, models, histories = run_quick_test(
+    data_dir='./data/garbage_classification',
+    epochs=3
+)
+```
+
+**完整训练（30个epoch）：**
+```python
+from main import run_all_experiments
+results, models, histories = run_all_experiments(
+    data_dir='./data/garbage_classification',
+    epochs=30
+)
+```
+
 ### 在本地 Jupyter 中运行
 
 ```bash
@@ -181,30 +223,7 @@ tensorboard --logdir=logs/
 pip install jupyter
 
 # 启动 Jupyter Notebook
-jupyter notebook garbage_classification.ipynb
-```
-
-### 在 Google Colab 中运行
-
-1. 打开 [Google Colab](https://colab.research.google.com)
-
-2. 选择 "文件" → "上传笔记本" → 上传 `garbage_classification.ipynb` 文件
-
-3. 按照 Notebook 中的步骤配置 Kaggle API 并下载数据
-
-4. 运行代码单元格
-
-**Colab 中配置 Kaggle API**：
-
-```python
-from google.colab import files
-files.upload()  # 上传 kaggle.json
-
-!mkdir -p ~/.kaggle
-!cp kaggle.json ~/.kaggle/
-!chmod 600 ~/.kaggle/kaggle.json
-!kaggle datasets download -d mostafaabla/garbage-classification
-!unzip -q garbage-classification.zip -d ./data
+jupyter notebook garbage_classification_complete.ipynb
 ```
 
 ### 快速测试（无需下载数据集）
