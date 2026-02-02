@@ -2,9 +2,6 @@
 主实验脚本 - 智能垃圾分类系统
 Main Experiment Script - Intelligent Waste Classification System
 
-论文题目: An Intelligent Waste Classification System Based on
-         Transfer Learning and MobileNetV2
-
 使用方法:
     1. 下载数据集到 ./data/garbage_classification/
     2. 运行: python main.py

@@ -503,8 +503,8 @@ def visualize_predictions(
 
 def generate_latex_table(results_list: List[Dict[str, Any]]) -> str:
     """
-    生成LaTeX格式的对比表格（用于论文）
-    Generate LaTeX format comparison table for paper
+    生成LaTeX格式的对比表格
+    Generate LaTeX format comparison table
 
     Args:
         results_list: 结果列表

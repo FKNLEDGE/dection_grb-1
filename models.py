@@ -53,8 +53,6 @@ class ChannelAttention(layers.Layer):
     通过对特征图的通道维度进行全局平均池化和全局最大池化，
     然后通过共享的MLP网络学习通道间的依赖关系。
 
-    参考论文: CBAM: Convolutional Block Attention Module (ECCV 2018)
-
     Args:
         reduction_ratio: 通道压缩比例，默认16
     """
@@ -117,8 +115,6 @@ class SpatialAttention(layers.Layer):
     通过对特征图的空间维度进行通道级的平均池化和最大池化，
     然后通过卷积网络学习空间位置间的依赖关系。
 
-    参考论文: CBAM: Convolutional Block Attention Module (ECCV 2018)
-
     Args:
         kernel_size: 卷积核大小，默认7
     """
@@ -171,9 +167,6 @@ class CBAM(layers.Layer):
 
     先应用通道注意力，再应用空间注意力，顺序处理能够更好地
     捕获"什么"和"在哪里"的信息。
-
-    参考论文: CBAM: Convolutional Block Attention Module (ECCV 2018)
-    https://arxiv.org/abs/1807.06521
 
     Args:
         reduction_ratio: 通道注意力的压缩比例，默认16
@@ -258,9 +251,6 @@ class SEBlock(layers.Layer):
     包含两个操作:
     1. Squeeze: 全局平均池化，将空间维度压缩为1x1
     2. Excitation: 通过两个全连接层学习通道间的依赖关系
-
-    参考论文: Squeeze-and-Excitation Networks (CVPR 2018)
-    https://arxiv.org/abs/1709.01507
 
     Args:
         reduction_ratio: 通道压缩比例，默认16
