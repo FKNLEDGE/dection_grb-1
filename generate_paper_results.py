@@ -9,10 +9,24 @@ Paper Results Generator - Intelligent Waste Classification System
     1. 加载已训练好的模型（从 saved_models/ 目录）
     2. 在测试集上全面评估每个模型
     3. 生成 EI 会议标准的高质量图表（300 DPI, 英文标签）
-    4. 生成 LaTeX 格式的对比表格代码
-    5. 生成消融实验结果表
-    6. 生成 Grad-CAM 可解释性可视化
-    7. 输出详细的纯文本分析报告
+       - 训练曲线（Accuracy/Loss vs Epoch）
+       - 混淆矩阵（单独 + 综合对比）
+       - 模型对比柱状图（Acc/F1/Size/Time 四维度）
+       - 准确率-效率权衡散点图
+       - 每类别 F1 雷达图
+       - 每类别 P/R/F1 柱状图
+       - 模型×类别 F1 热力图矩阵
+       - ROC 曲线 + AUC（多分类 One-vs-Rest）
+       - 数据集类别分布图
+       - Grad-CAM 可解释性可视化（含跨模型对比）
+       - 预测样例展示
+    4. 生成 LaTeX 格式的表格代码
+       - 模型性能对比总表
+       - 最佳模型每类别指标表
+       - 消融实验表（含 Focal Loss 组合）
+       - 数据集统计表
+       - 训练超参数表
+    5. 输出详细的纯文本分析报告（含 classification_report）
 
 使用方法：
     python generate_paper_results.py
@@ -70,9 +84,11 @@ from sklearn.metrics import (
     f1_score,
     precision_recall_fscore_support,
     roc_curve,
-    auc
+    auc,
+    roc_auc_score,
 )
 from sklearn.preprocessing import label_binarize
+from itertools import cycle
 
 import tensorflow as tf
 
@@ -678,6 +694,287 @@ def fig_f1_heatmap(all_results, output_dir):
     logger.info(f"  [Figure] F1热力图矩阵 -> {path}")
 
 
+# ---- Figure NEW-1: 训练曲线（从 training_log.csv 加载）----
+def fig_training_curves(output_dir, models_output_dir='./outputs'):
+    """
+    从训练日志 CSV 中加载并绘制每个模型的 Accuracy/Loss 曲线。
+    如果找不到日志文件则跳过。
+    """
+    fig_dir = ensure_dir(os.path.join(output_dir, 'figures'))
+
+    if not os.path.exists(models_output_dir):
+        logger.warning(f"  训练日志目录不存在: {models_output_dir}，跳过训练曲线")
+        return
+
+    # 搜索所有 training_log.csv
+    log_files = {}
+    for root, dirs, files in os.walk(models_output_dir):
+        for f in files:
+            if f == 'training_log.csv':
+                model_name = os.path.basename(root)
+                log_files[model_name] = os.path.join(root, f)
+
+    if not log_files:
+        # 也搜索 results.json 看有没有训练历史
+        logger.warning("  未找到 training_log.csv 文件，跳过训练曲线")
+        return
+
+    logger.info(f"  找到 {len(log_files)} 个训练日志")
+
+    # (A) 每个模型单独一张图
+    for model_name, csv_path in log_files.items():
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            logger.warning(f"  读取 {csv_path} 失败: {e}")
+            continue
+
+        # 列名兼容：有的叫 acc/val_acc，有的叫 accuracy/val_accuracy
+        acc_col = 'accuracy' if 'accuracy' in df.columns else 'acc'
+        val_acc_col = 'val_accuracy' if 'val_accuracy' in df.columns else 'val_acc'
+        loss_col = 'loss'
+        val_loss_col = 'val_loss'
+
+        if acc_col not in df.columns:
+            continue
+
+        epochs = range(1, len(df) + 1)
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+
+        # Accuracy
+        axes[0].plot(epochs, df[acc_col], 'b-o', markersize=3,
+                     label='Training', linewidth=1.5)
+        if val_acc_col in df.columns:
+            axes[0].plot(epochs, df[val_acc_col], 'r-s', markersize=3,
+                         label='Validation', linewidth=1.5)
+        axes[0].set_xlabel('Epoch')
+        axes[0].set_ylabel('Accuracy')
+        axes[0].set_title(f'(a) Accuracy - {get_display_name(model_name)}')
+        axes[0].legend()
+
+        # Loss
+        axes[1].plot(epochs, df[loss_col], 'b-o', markersize=3,
+                     label='Training', linewidth=1.5)
+        if val_loss_col in df.columns:
+            axes[1].plot(epochs, df[val_loss_col], 'r-s', markersize=3,
+                         label='Validation', linewidth=1.5)
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('Loss')
+        axes[1].set_title(f'(b) Loss - {get_display_name(model_name)}')
+        axes[1].legend()
+
+        plt.tight_layout()
+        path = os.path.join(fig_dir, f'training_curves_{model_name}.png')
+        plt.savefig(path)
+        plt.close()
+        logger.info(f"  [Figure] 训练曲线 ({model_name}) -> {path}")
+
+    # (B) 所有模型的验证准确率对比曲线（同一张图）
+    if len(log_files) > 1:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+        for idx, (model_name, csv_path) in enumerate(log_files.items()):
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception:
+                continue
+            val_acc_col = 'val_accuracy' if 'val_accuracy' in df.columns else 'val_acc'
+            val_loss_col = 'val_loss'
+            if val_acc_col not in df.columns:
+                continue
+            epochs = range(1, len(df) + 1)
+            color = MODEL_COLORS[idx % len(MODEL_COLORS)]
+            label = get_display_name(model_name)
+            axes[0].plot(epochs, df[val_acc_col], '-', color=color,
+                         linewidth=1.5, label=label)
+            if val_loss_col in df.columns:
+                axes[1].plot(epochs, df[val_loss_col], '-', color=color,
+                             linewidth=1.5, label=label)
+
+        axes[0].set_xlabel('Epoch')
+        axes[0].set_ylabel('Validation Accuracy')
+        axes[0].set_title('(a) Validation Accuracy Comparison')
+        axes[0].legend(fontsize=8)
+
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('Validation Loss')
+        axes[1].set_title('(b) Validation Loss Comparison')
+        axes[1].legend(fontsize=8)
+
+        plt.tight_layout()
+        path = os.path.join(fig_dir, 'training_curves_comparison.png')
+        plt.savefig(path)
+        plt.close()
+        logger.info(f"  [Figure] 训练曲线对比 -> {path}")
+
+
+# ---- Figure NEW-2: ROC 曲线 + AUC ----
+def fig_roc_curves(all_results, output_dir):
+    """为每个模型绘制多分类 ROC 曲线 (One-vs-Rest)，并计算 AUC"""
+    fig_dir = ensure_dir(os.path.join(output_dir, 'figures'))
+
+    for res in all_results:
+        name = res['model_name']
+        class_names = res['class_names']
+        n_classes = len(class_names)
+        y_true = res['y_true']
+        y_score = res['y_pred_proba']
+
+        # One-hot 编码真实标签
+        y_true_bin = label_binarize(y_true, classes=list(range(n_classes)))
+
+        # 计算每类 ROC
+        fpr = {}
+        tpr = {}
+        roc_auc = {}
+        for i in range(n_classes):
+            fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_score[:, i])
+            roc_auc[i] = auc(fpr[i], tpr[i])
+
+        # micro-average ROC
+        fpr['micro'], tpr['micro'], _ = roc_curve(
+            y_true_bin.ravel(), y_score[:, :n_classes].ravel()
+        )
+        roc_auc['micro'] = auc(fpr['micro'], tpr['micro'])
+
+        # macro-average ROC
+        all_fpr = np.linspace(0, 1, 200)
+        mean_tpr = np.zeros_like(all_fpr)
+        for i in range(n_classes):
+            mean_tpr += np.interp(all_fpr, fpr[i], tpr[i])
+        mean_tpr /= n_classes
+        fpr['macro'] = all_fpr
+        tpr['macro'] = mean_tpr
+        roc_auc['macro'] = auc(fpr['macro'], tpr['macro'])
+
+        # 绘图
+        fig, ax = plt.subplots(figsize=(8, 6.5))
+
+        # 绘制每类曲线（细线+半透明）
+        colors_cycle = cycle(MODEL_COLORS + ['#d62728', '#9467bd', '#8c564b',
+                                              '#e377c2', '#7f7f7f', '#bcbd22'])
+        for i, color in zip(range(n_classes), colors_cycle):
+            ax.plot(fpr[i], tpr[i], color=color, lw=1, alpha=0.5,
+                    label=f'{class_names[i]} (AUC={roc_auc[i]:.3f})')
+
+        # 绘制 macro/micro 平均（粗线）
+        ax.plot(fpr['micro'], tpr['micro'], color='navy', lw=2, linestyle=':',
+                label=f'Micro-avg (AUC={roc_auc["micro"]:.3f})')
+        ax.plot(fpr['macro'], tpr['macro'], color='darkorange', lw=2, linestyle='--',
+                label=f'Macro-avg (AUC={roc_auc["macro"]:.3f})')
+
+        ax.plot([0, 1], [0, 1], 'k--', lw=0.8, alpha=0.5)
+        ax.set_xlim([-0.02, 1.02])
+        ax.set_ylim([-0.02, 1.02])
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_title(f'ROC Curves - {get_display_name(name)}')
+        ax.legend(loc='lower right', fontsize=7, ncol=2)
+        plt.tight_layout()
+        path = os.path.join(fig_dir, f'roc_curve_{name}.png')
+        plt.savefig(path)
+        plt.close()
+        logger.info(f"  [Figure] ROC曲线 ({name}) -> {path}")
+
+        # 保存 AUC 数据到 results 中
+        res['auc_macro'] = roc_auc['macro']
+        res['auc_micro'] = roc_auc['micro']
+        res['auc_per_class'] = {class_names[i]: roc_auc[i] for i in range(n_classes)}
+
+
+# ---- Figure NEW-3: 数据集类别分布 ----
+def fig_dataset_distribution(test_generator, output_dir, data_dir=None):
+    """展示数据集各类别的样本数量分布"""
+    fig_dir = ensure_dir(os.path.join(output_dir, 'figures'))
+
+    class_names = list(test_generator.class_indices.keys())
+    class_to_idx = test_generator.class_indices
+
+    # 尝试统计训练集 + 验证集 + 测试集
+    split_counts = {}
+    for split_name in ['train', 'val', 'test']:
+        counts = {}
+        # 查找可能的目录
+        for base in [data_dir, '.']:
+            if base is None:
+                continue
+            for sub in [f'split/{split_name}', split_name]:
+                d = os.path.join(base, sub)
+                if os.path.isdir(d):
+                    for cn in class_names:
+                        class_dir = os.path.join(d, cn)
+                        if os.path.isdir(class_dir):
+                            n_files = len([f for f in os.listdir(class_dir)
+                                          if f.lower().endswith(
+                                              ('.png', '.jpg', '.jpeg', '.bmp'))])
+                            counts[cn] = n_files
+                    if counts:
+                        break
+            if counts:
+                break
+        if counts:
+            split_counts[split_name] = counts
+
+    if not split_counts:
+        # 至少用测试集的 support
+        test_classes = test_generator.classes
+        from collections import Counter
+        counter = Counter(test_classes)
+        split_counts['test'] = {class_names[k]: v for k, v in counter.items()}
+
+    # 绘图
+    N = len(class_names)
+    x = np.arange(N)
+
+    if len(split_counts) >= 2:
+        # 分组柱状图：train / val / test
+        fig, ax = plt.subplots(figsize=(13, 5))
+        width = 0.25
+        offset = 0
+        split_colors = {'train': COLORS['blue'], 'val': COLORS['orange'],
+                        'test': COLORS['green']}
+        for split_name in ['train', 'val', 'test']:
+            if split_name in split_counts:
+                vals = [split_counts[split_name].get(cn, 0) for cn in class_names]
+                ax.bar(x + offset, vals, width, label=split_name.capitalize(),
+                       color=split_colors.get(split_name, COLORS['gray']),
+                       edgecolor='white')
+                offset += width
+
+        ax.set_xlabel('Category')
+        ax.set_ylabel('Number of Images')
+        ax.set_title('Dataset Distribution by Category and Split')
+        ax.set_xticks(x + width)
+        ax.set_xticklabels(class_names, rotation=40, ha='right', fontsize=9)
+        ax.legend()
+
+        # 标注总数
+        total_all = sum(sum(v.values()) for v in split_counts.values())
+        ax.text(0.98, 0.95, f'Total: {total_all:,} images',
+                transform=ax.transAxes, ha='right', va='top', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    else:
+        fig, ax = plt.subplots(figsize=(13, 5))
+        split_name = list(split_counts.keys())[0]
+        vals = [split_counts[split_name].get(cn, 0) for cn in class_names]
+        ax.bar(x, vals, color=COLORS['blue'], edgecolor='white')
+        ax.set_xlabel('Category')
+        ax.set_ylabel('Number of Images')
+        ax.set_title(f'Dataset Distribution ({split_name})')
+        ax.set_xticks(x)
+        ax.set_xticklabels(class_names, rotation=40, ha='right', fontsize=9)
+        for i, v in enumerate(vals):
+            ax.text(i, v + max(vals) * 0.01, str(v), ha='center', fontsize=8)
+
+    plt.tight_layout()
+    path = os.path.join(fig_dir, 'dataset_distribution.png')
+    plt.savefig(path)
+    plt.close()
+    logger.info(f"  [Figure] 数据集分布图 -> {path}")
+
+    return split_counts
+
+
 # ---- Figure 7: Grad-CAM 可视化 ----
 def fig_gradcam(models_dict, test_generator, output_dir, num_samples=8):
     """为每个模型生成 Grad-CAM 热力图"""
@@ -762,6 +1059,59 @@ def fig_gradcam(models_dict, test_generator, output_dir, num_samples=8):
         plt.savefig(path)
         plt.close()
         logger.info(f"  [Figure] Grad-CAM -> {path}")
+
+    # (B) 跨模型 Grad-CAM 对比图：同一批图片在不同模型下的热力图
+    if len(models_dict) >= 2:
+        logger.info("  生成 Grad-CAM 跨模型对比图...")
+        test_generator.reset()
+        batch = next(test_generator)
+        n_compare = min(4, len(batch[0]))
+        compare_images = batch[0][:n_compare]
+        compare_labels = batch[1][:n_compare]
+
+        n_models = len(models_dict)
+        fig, axes = plt.subplots(n_compare, n_models + 1,
+                                 figsize=(3.5 * (n_models + 1), 3.5 * n_compare))
+        if n_compare == 1:
+            axes = axes.reshape(1, -1)
+
+        for row_idx in range(n_compare):
+            img = compare_images[row_idx]
+            true_idx = np.argmax(compare_labels[row_idx])
+
+            # 第一列：原图
+            axes[row_idx, 0].imshow(img)
+            axes[row_idx, 0].set_title(f'Original\n({class_names[true_idx]})',
+                                       fontsize=9)
+            axes[row_idx, 0].axis('off')
+
+            # 后续列：各模型的 Grad-CAM
+            for col_idx, (m_name, m_model) in enumerate(models_dict.items()):
+                try:
+                    gc_obj = GradCAM(m_model)
+                    pred = m_model.predict(np.expand_dims(img, 0), verbose=0)
+                    pred_idx = np.argmax(pred[0])
+                    hm = gc_obj.compute_heatmap(np.expand_dims(img, 0), pred_idx)
+                    overlay = gc_obj.overlay_heatmap(img, hm)
+                    overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+                    axes[row_idx, col_idx + 1].imshow(overlay_rgb)
+                    conf = pred[0][pred_idx]
+                    color = 'green' if pred_idx == true_idx else 'red'
+                    axes[row_idx, col_idx + 1].set_title(
+                        f'{get_display_name(m_name)}\n'
+                        f'{class_names[pred_idx]} ({conf:.2f})',
+                        fontsize=8, color=color)
+                except Exception:
+                    axes[row_idx, col_idx + 1].text(
+                        0.5, 0.5, 'N/A', ha='center', va='center')
+                axes[row_idx, col_idx + 1].axis('off')
+
+        plt.suptitle('Grad-CAM Comparison Across Models', fontsize=13)
+        plt.tight_layout()
+        path = os.path.join(fig_dir, 'gradcam_comparison.png')
+        plt.savefig(path)
+        plt.close()
+        logger.info(f"  [Figure] Grad-CAM 跨模型对比 -> {path}")
 
 
 # ---- Figure 8: 预测样例展示 ----
@@ -977,6 +1327,130 @@ def gen_latex_ablation_table(all_results, output_dir):
     return tex
 
 
+def gen_latex_dataset_table(test_generator, output_dir, data_dir=None):
+    """Table 4: 数据集统计信息表"""
+    table_dir = ensure_dir(os.path.join(output_dir, 'tables'))
+
+    class_names = list(test_generator.class_indices.keys())
+
+    # 统计各划分集的样本数
+    split_totals = {}
+    for split_name in ['train', 'val', 'test']:
+        for base in [data_dir, '.']:
+            if base is None:
+                continue
+            for sub in [f'split/{split_name}', split_name]:
+                d = os.path.join(base, sub)
+                if os.path.isdir(d):
+                    total = 0
+                    for cn in class_names:
+                        cd = os.path.join(d, cn)
+                        if os.path.isdir(cd):
+                            total += len([f for f in os.listdir(cd)
+                                         if f.lower().endswith(
+                                             ('.png', '.jpg', '.jpeg', '.bmp'))])
+                    if total > 0:
+                        split_totals[split_name] = total
+                        break
+            if split_name in split_totals:
+                break
+
+    total_all = sum(split_totals.values()) if split_totals else test_generator.samples
+    n_classes = len(class_names)
+
+    lines = []
+    lines.append(r'\begin{table}[htbp]')
+    lines.append(r'\centering')
+    lines.append(r'\caption{Dataset Statistics}')
+    lines.append(r'\label{tab:dataset}')
+    lines.append(r'\begin{tabular}{l l}')
+    lines.append(r'\toprule')
+    lines.append(r'Property & Value \\')
+    lines.append(r'\midrule')
+    lines.append(r'Dataset & Garbage Classification (Kaggle) \\')
+    lines.append(f'Number of classes & {n_classes} \\\\')
+    lines.append(f'Total images & {total_all:,} \\\\')
+    if 'train' in split_totals:
+        lines.append(f'Training set & {split_totals["train"]:,} (80\\%) \\\\')
+    if 'val' in split_totals:
+        lines.append(f'Validation set & {split_totals["val"]:,} (10\\%) \\\\')
+    if 'test' in split_totals:
+        lines.append(f'Test set & {split_totals["test"]:,} (10\\%) \\\\')
+    lines.append(r'Image size & $224 \times 224 \times 3$ \\')
+    lines.append(r'Split ratio & 80:10:10 (train:val:test) \\')
+    lines.append(r'\bottomrule')
+    lines.append(r'\end{tabular}')
+    lines.append(r'\end{table}')
+
+    tex = '\n'.join(lines)
+    path = os.path.join(table_dir, 'table_dataset.tex')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(tex)
+    logger.info(f"  [Table] 数据集统计表 -> {path}")
+    return tex
+
+
+def gen_latex_hyperparams_table(output_dir):
+    """Table 5: 训练超参数表（保证可复现性）"""
+    table_dir = ensure_dir(os.path.join(output_dir, 'tables'))
+
+    # 尝试从 config.py 读取实际值
+    params = OrderedDict()
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import config as cfg
+        params['Optimizer'] = 'Adam'
+        params['Initial learning rate'] = str(cfg.LEARNING_RATE)
+        params['LR schedule'] = cfg.LR_SCHEDULE_TYPE.replace('_', ' + ').title()
+        params['Warmup epochs'] = str(cfg.WARMUP_EPOCHS)
+        params['Batch size'] = str(cfg.BATCH_SIZE)
+        params['Max epochs'] = str(cfg.EPOCHS)
+        params['Early stopping patience'] = str(cfg.EARLY_STOPPING_PATIENCE)
+        params['Label smoothing'] = str(cfg.LABEL_SMOOTHING)
+        params['Dropout rate'] = str(cfg.DROPOUT_RATE)
+        params['Mixup alpha'] = str(cfg.MIXUP_ALPHA) if cfg.USE_MIXUP else 'Disabled'
+        params['CutMix alpha'] = str(cfg.CUTMIX_ALPHA) if cfg.USE_CUTMIX else 'Disabled'
+        params['EMA decay'] = str(cfg.EMA_DECAY) if cfg.USE_EMA else 'Disabled'
+        params['Image size'] = f'{cfg.IMG_SIZE} $\\times$ {cfg.IMG_SIZE}'
+        params['Random seed'] = str(cfg.RANDOM_SEED)
+        params['Base model frozen'] = 'Yes' if cfg.FREEZE_BASE else 'No'
+    except Exception:
+        # 使用默认值
+        params['Optimizer'] = 'Adam'
+        params['Initial learning rate'] = '0.001'
+        params['LR schedule'] = 'Warmup + Cosine'
+        params['Warmup epochs'] = '5'
+        params['Batch size'] = '32'
+        params['Max epochs'] = '30'
+        params['Early stopping patience'] = '5'
+        params['Label smoothing'] = '0.1'
+        params['Dropout rate'] = '0.5'
+        params['Image size'] = '224 $\\times$ 224'
+        params['Random seed'] = '42'
+
+    lines = []
+    lines.append(r'\begin{table}[htbp]')
+    lines.append(r'\centering')
+    lines.append(r'\caption{Training Hyperparameters}')
+    lines.append(r'\label{tab:hyperparams}')
+    lines.append(r'\begin{tabular}{l l}')
+    lines.append(r'\toprule')
+    lines.append(r'Hyperparameter & Value \\')
+    lines.append(r'\midrule')
+    for k, v in params.items():
+        lines.append(f'{k} & {v} \\\\')
+    lines.append(r'\bottomrule')
+    lines.append(r'\end{tabular}')
+    lines.append(r'\end{table}')
+
+    tex = '\n'.join(lines)
+    path = os.path.join(table_dir, 'table_hyperparams.tex')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(tex)
+    logger.info(f"  [Table] 超参数表 -> {path}")
+    return tex
+
+
 # ============================================================================
 # CSV 数据导出
 # ============================================================================
@@ -1004,6 +1478,8 @@ def export_csv_data(all_results, output_dir):
             'Inference_Time_ms': r['inference_time_ms'],
             'Inference_Std_ms': r['inference_time_std_ms'],
             'FPS': r['fps'],
+            'AUC_macro': r.get('auc_macro', ''),
+            'AUC_micro': r.get('auc_micro', ''),
         })
 
     df = pd.DataFrame(rows)
@@ -1150,6 +1626,21 @@ def generate_text_report(all_results, output_dir):
                   f"(F1={r['per_class_f1'][best_idx]:.4f})")
         rpt.write(f"  最弱类别: {class_names[worst_idx]} "
                   f"(F1={r['per_class_f1'][worst_idx]:.4f})")
+
+        # AUC 信息
+        if 'auc_macro' in r:
+            rpt.write(f"  Macro AUC: {r['auc_macro']:.4f}")
+            rpt.write(f"  Micro AUC: {r['auc_micro']:.4f}")
+
+        # sklearn classification_report 完整输出
+        rpt.write(f"\n  [sklearn classification_report]")
+        report_text = classification_report(
+            r['y_true'], r['y_pred'],
+            target_names=class_names,
+            digits=4
+        )
+        for line in report_text.strip().split('\n'):
+            rpt.write(f"  {line}")
 
     # ---- 5. 混淆矩阵分析（最佳模型的 Top 错分对）----
     rpt.section("5. 错分分析 (最常见的错误分类)")
@@ -1340,6 +1831,9 @@ def main():
     fig_per_class_radar(all_results, args.output_dir)
     fig_per_class_bar(all_results, args.output_dir)
     fig_f1_heatmap(all_results, args.output_dir)
+    fig_training_curves(args.output_dir)     # 训练曲线（从CSV日志加载）
+    fig_roc_curves(all_results, args.output_dir)  # ROC曲线 + AUC
+    fig_dataset_distribution(test_generator, args.output_dir, args.data_dir)  # 数据集分布
     fig_prediction_samples(models_dict, test_generator, args.output_dir)
 
     if not args.no_gradcam:
@@ -1355,6 +1849,8 @@ def main():
     tex_comparison = gen_latex_comparison_table(all_results, args.output_dir)
     tex_per_class = gen_latex_per_class_table(all_results, args.output_dir)
     tex_ablation = gen_latex_ablation_table(all_results, args.output_dir)
+    tex_dataset = gen_latex_dataset_table(test_generator, args.output_dir, args.data_dir)
+    tex_hyperparams = gen_latex_hyperparams_table(args.output_dir)
 
     # 输出一份完整的 LaTeX 代码到控制台
     print("\n" + "-" * 40)
@@ -1370,6 +1866,14 @@ def main():
         print("Table 3: 消融实验")
         print("-" * 40)
         print(tex_ablation)
+    print("\n" + "-" * 40)
+    print("Table 4: 数据集统计")
+    print("-" * 40)
+    print(tex_dataset)
+    print("\n" + "-" * 40)
+    print("Table 5: 训练超参数")
+    print("-" * 40)
+    print(tex_hyperparams)
 
     # ==============================
     # 6. 导出数据并生成报告
@@ -1391,24 +1895,31 @@ def main():
     print("=" * 70)
     print(f"\n  总耗时: {elapsed:.1f} 秒 ({elapsed/60:.1f} 分钟)")
     print(f"\n  输出目录: {args.output_dir}/")
-    print(f"  ├── figures/           ← 论文用图 (PNG, 300 DPI)")
-    print(f"  │   ├── confusion_matrix_*.png     混淆矩阵")
-    print(f"  │   ├── confusion_matrices_all.png  综合混淆矩阵")
-    print(f"  │   ├── model_comparison_bars.png   四维度对比柱状图")
-    print(f"  │   ├── accuracy_vs_efficiency.png  准确率-效率散点图")
-    print(f"  │   ├── per_class_f1_radar.png      F1 雷达图")
-    print(f"  │   ├── per_class_metrics_*.png     每类别指标")
-    print(f"  │   ├── f1_heatmap_all.png          F1 热力图矩阵")
-    print(f"  │   ├── gradcam_*.png               Grad-CAM 可视化")
-    print(f"  │   └── prediction_samples_*.png    预测样例")
-    print(f"  ├── tables/            ← LaTeX 表格 (.tex)")
-    print(f"  │   ├── table_model_comparison.tex  模型对比表")
-    print(f"  │   ├── table_per_class.tex         每类别指标表")
-    print(f"  │   └── table_ablation.tex          消融实验表")
-    print(f"  ├── data/              ← CSV 原始数据")
-    print(f"  │   ├── model_comparison.csv        总对比数据")
-    print(f"  │   └── per_class_*.csv             每模型每类别数据")
-    print(f"  └── report.txt         ← 完整文字版结果报告")
+    print(f"  ├── figures/            ← 论文用图 (PNG, 300 DPI)")
+    print(f"  │   ├── training_curves_*.png        训练曲线 (Acc/Loss)")
+    print(f"  │   ├── training_curves_comparison    多模型训练曲线对比")
+    print(f"  │   ├── confusion_matrix_*.png       混淆矩阵")
+    print(f"  │   ├── confusion_matrices_all.png   综合混淆矩阵")
+    print(f"  │   ├── model_comparison_bars.png    四维度对比柱状图")
+    print(f"  │   ├── accuracy_vs_efficiency.png   准确率-效率散点图")
+    print(f"  │   ├── roc_curve_*.png              ROC 曲线 + AUC")
+    print(f"  │   ├── per_class_f1_radar.png       F1 雷达图")
+    print(f"  │   ├── per_class_metrics_*.png      每类别指标")
+    print(f"  │   ├── f1_heatmap_all.png           F1 热力图矩阵")
+    print(f"  │   ├── dataset_distribution.png     数据集类别分布")
+    print(f"  │   ├── gradcam_*.png                Grad-CAM 可视化")
+    print(f"  │   ├── gradcam_comparison.png       Grad-CAM 跨模型对比")
+    print(f"  │   └── prediction_samples_*.png     预测样例")
+    print(f"  ├── tables/             ← LaTeX 表格 (.tex)")
+    print(f"  │   ├── table_model_comparison.tex   模型对比表")
+    print(f"  │   ├── table_per_class.tex          每类别指标表")
+    print(f"  │   ├── table_ablation.tex           消融实验表")
+    print(f"  │   ├── table_dataset.tex            数据集统计表")
+    print(f"  │   └── table_hyperparams.tex        训练超参数表")
+    print(f"  ├── data/               ← CSV 原始数据")
+    print(f"  │   ├── model_comparison.csv         总对比数据(含AUC)")
+    print(f"  │   └── per_class_*.csv              每模型每类别数据")
+    print(f"  └── report.txt          ← 完整文字报告(含classification_report)")
     print()
     print("  下一步:")
     print("  1. 查看 report.txt 获取详细分析")
