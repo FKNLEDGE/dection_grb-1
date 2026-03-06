@@ -390,6 +390,198 @@ def compare_models(
     return df
 
 
+def plot_ablation_results(
+    ablation_results: List[Dict[str, Any]],
+    output_dir: str = OUTPUT_DIR
+) -> pd.DataFrame:
+    """
+    消融实验专用可视化：生成分组柱状图、增量贡献表和LaTeX表格
+    Ablation study visualization: grouped bar charts, delta table, and LaTeX table
+
+    Args:
+        ablation_results: 消融实验结果列表，每个元素包含:
+            - configuration: 配置名称
+            - accuracy: 准确率
+            - precision: 精确率
+            - recall: 召回率
+            - f1_score: F1分数
+        output_dir: 输出目录
+
+    Returns:
+        DataFrame: 消融结果表（含增量列）
+    """
+    import json
+
+    ablation_dir = ensure_dir(os.path.join(output_dir, 'ablation'))
+    df = pd.DataFrame(ablation_results)
+
+    # --- 计算相对Baseline的增量 ---
+    baseline_acc = df.iloc[0]['accuracy']
+    baseline_f1 = df.iloc[0]['f1_score']
+    df['delta_accuracy'] = df['accuracy'] - baseline_acc
+    df['delta_f1'] = df['f1_score'] - baseline_f1
+
+    # --- 打印增量贡献表 ---
+    print("\n" + "=" * 80)
+    print("消融实验增量贡献表 (Ablation Delta Contribution)")
+    print("=" * 80)
+    print(f"{'Configuration':<30} {'Acc':<10} {'ΔAcc':<10} {'F1':<10} {'ΔF1':<10}")
+    print("-" * 80)
+    for _, row in df.iterrows():
+        print(f"{row['configuration']:<30} "
+              f"{row['accuracy']:.4f}    "
+              f"{row['delta_accuracy']:+.4f}    "
+              f"{row['f1_score']:.4f}    "
+              f"{row['delta_f1']:+.4f}")
+    print("=" * 80)
+
+    # --- 图1: 分组柱状图 (Accuracy + F1) ---
+    fig, ax = plt.subplots(figsize=(max(12, len(df) * 1.5), 6))
+    config_names = df['configuration'].tolist()
+    x = np.arange(len(config_names))
+    width = 0.35
+
+    bars_acc = ax.bar(x - width / 2, df['accuracy'], width,
+                      label='Accuracy', color='#3498db', alpha=0.85)
+    bars_f1 = ax.bar(x + width / 2, df['f1_score'], width,
+                     label='F1-Score', color='#e74c3c', alpha=0.85)
+
+    ax.set_ylabel('Score', fontsize=12)
+    ax.set_title('Ablation Study Results', fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(config_names, rotation=30, ha='right', fontsize=9)
+    ax.legend(fontsize=11)
+
+    # 设置y轴范围
+    min_val = min(df['accuracy'].min(), df['f1_score'].min())
+    ax.set_ylim([max(0, min_val - 0.05), 1.02])
+
+    # 添加数值标注
+    for bar in bars_acc:
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2., h + 0.005,
+                f'{h:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+    for bar in bars_f1:
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2., h + 0.005,
+                f'{h:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+    plt.tight_layout()
+    save_path = os.path.join(ablation_dir, 'ablation_comparison.png')
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"\n消融对比图已保存: {save_path}")
+
+    # --- 图2: 增量贡献瀑布图 ---
+    fig, ax = plt.subplots(figsize=(max(12, len(df) * 1.5), 5))
+    # 排除Baseline行，只展示增量
+    df_delta = df.iloc[1:].copy()
+    x_delta = np.arange(len(df_delta))
+
+    colors = ['#2ecc71' if v >= 0 else '#e74c3c' for v in df_delta['delta_accuracy']]
+    bars = ax.bar(x_delta, df_delta['delta_accuracy'] * 100, 0.6, color=colors, alpha=0.85)
+
+    ax.set_ylabel('ΔAccuracy (%)', fontsize=12)
+    ax.set_title('Component Contribution (vs Baseline)', fontsize=14, fontweight='bold')
+    ax.set_xticks(x_delta)
+    ax.set_xticklabels(df_delta['configuration'].tolist(), rotation=30, ha='right', fontsize=9)
+    ax.axhline(y=0, color='gray', linestyle='--', linewidth=0.8)
+
+    for bar, val in zip(bars, df_delta['delta_accuracy']):
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2.,
+                h + (0.1 if h >= 0 else -0.3),
+                f'{val:+.2%}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+    plt.tight_layout()
+    save_path = os.path.join(ablation_dir, 'ablation_delta.png')
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"增量贡献图已保存: {save_path}")
+
+    # --- 图3: 综合雷达图 ---
+    if len(df) >= 3:
+        metrics = ['accuracy', 'precision', 'recall', 'f1_score']
+        metric_labels = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        num_metrics = len(metrics)
+        angles = np.linspace(0, 2 * np.pi, num_metrics, endpoint=False).tolist()
+        angles += angles[:1]
+
+        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+
+        # 只画Baseline、最佳单因素和Full Proposed（首尾+代表性中间）
+        indices_to_plot = [0]  # Baseline
+        if len(df) > 2:
+            # 找最佳单因素
+            single_factors = df.iloc[1:-1]
+            if len(single_factors) > 0:
+                best_single_idx = single_factors['accuracy'].idxmax()
+                indices_to_plot.append(best_single_idx)
+        indices_to_plot.append(len(df) - 1)  # Full Proposed
+
+        colors_radar = ['#3498db', '#2ecc71', '#e74c3c']
+        for idx, (row_idx, color) in enumerate(zip(indices_to_plot, colors_radar)):
+            row = df.iloc[row_idx]
+            values = [row[m] for m in metrics]
+            values += values[:1]
+            ax.plot(angles, values, 'o-', linewidth=2, label=row['configuration'],
+                    color=color, alpha=0.8)
+            ax.fill(angles, values, alpha=0.1, color=color)
+
+        ax.set_thetagrids(np.degrees(angles[:-1]), metric_labels)
+        ax.set_ylim(0, 1.05)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=10)
+        ax.set_title('Ablation Study - Radar Chart', fontsize=13, fontweight='bold', pad=20)
+
+        plt.tight_layout()
+        save_path = os.path.join(ablation_dir, 'ablation_radar.png')
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close()
+        print(f"雷达图已保存: {save_path}")
+
+    # --- 生成LaTeX消融表格 ---
+    latex_lines = [
+        r'\begin{table}[htbp]',
+        r'\centering',
+        r'\caption{Ablation Study Results}',
+        r'\label{tab:ablation}',
+        r'\begin{tabular}{lcccccc}',
+        r'\toprule',
+        r'Configuration & Accuracy & Precision & Recall & F1-Score & $\Delta$Acc \\',
+        r'\midrule',
+    ]
+    for _, row in df.iterrows():
+        delta_str = f"{row['delta_accuracy']:+.2%}" if row['delta_accuracy'] != 0 else '-'
+        latex_lines.append(
+            f"{row['configuration']} & {row['accuracy']:.4f} & "
+            f"{row['precision']:.4f} & {row['recall']:.4f} & "
+            f"{row['f1_score']:.4f} & {delta_str} \\\\"
+        )
+    latex_lines.extend([
+        r'\bottomrule',
+        r'\end{tabular}',
+        r'\end{table}',
+    ])
+    latex_table = '\n'.join(latex_lines)
+
+    latex_path = os.path.join(ablation_dir, 'ablation_table.tex')
+    with open(latex_path, 'w', encoding='utf-8') as f:
+        f.write(latex_table)
+    print(f"LaTeX表格已保存: {latex_path}")
+
+    # --- 保存结果为CSV和JSON ---
+    csv_path = os.path.join(ablation_dir, 'ablation_results.csv')
+    df.to_csv(csv_path, index=False)
+    print(f"CSV结果已保存: {csv_path}")
+
+    json_path = os.path.join(ablation_dir, 'ablation_results.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(ablation_results, f, ensure_ascii=False, indent=2)
+    print(f"JSON结果已保存: {json_path}")
+
+    return df
+
+
 def plot_per_class_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,

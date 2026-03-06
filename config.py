@@ -166,6 +166,63 @@ ABLATION_MODELS: List[tuple] = [
     ('MobileNetV2_CBAM', True, '+ CBAM + Focal Loss (Proposed)'),
 ]
 
+# 扩展消融实验配置（完整消融）
+# 逐步添加各组件，验证每个组件的边际贡献
+ABLATION_CONFIGS_EXTENDED: List[Dict[str, Any]] = [
+    # 组1: 基线
+    {
+        'model': 'MobileNetV2', 'focal_loss': False,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': False,
+        'name': 'Baseline'
+    },
+    # 组2: 单因素消融 - 注意力机制
+    {
+        'model': 'MobileNetV2_CBAM', 'focal_loss': False,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': False,
+        'name': '+ CBAM'
+    },
+    {
+        'model': 'MobileNetV2_SE', 'focal_loss': False,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': False,
+        'name': '+ SE-Net'
+    },
+    # 组3: 单因素消融 - 损失函数
+    {
+        'model': 'MobileNetV2', 'focal_loss': True,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': False,
+        'name': '+ Focal Loss'
+    },
+    {
+        'model': 'MobileNetV2', 'focal_loss': False,
+        'label_smoothing': 0.1, 'use_mixup': False, 'use_ema': False,
+        'name': '+ Label Smoothing'
+    },
+    # 组4: 单因素消融 - 数据增强
+    {
+        'model': 'MobileNetV2', 'focal_loss': False,
+        'label_smoothing': 0.0, 'use_mixup': True, 'use_ema': False,
+        'name': '+ Mixup/CutMix'
+    },
+    # 组5: 单因素消融 - 训练策略
+    {
+        'model': 'MobileNetV2', 'focal_loss': False,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': True,
+        'name': '+ EMA'
+    },
+    # 组6: 组合消融
+    {
+        'model': 'MobileNetV2_CBAM', 'focal_loss': True,
+        'label_smoothing': 0.0, 'use_mixup': False, 'use_ema': False,
+        'name': '+ CBAM + Focal Loss'
+    },
+    # 组7: 完整方案（所有组件）
+    {
+        'model': 'MobileNetV2_CBAM', 'focal_loss': True,
+        'label_smoothing': 0.1, 'use_mixup': True, 'use_ema': True,
+        'name': 'Full Proposed'
+    },
+]
+
 # ==================== 交叉验证配置 ====================
 N_FOLDS: int = 5  # K折交叉验证的折数
 
@@ -204,7 +261,7 @@ __all__ = [
     # 实验
     'MODELS_TO_COMPARE', 'MODEL_HEAD_CONFIG',
     # 消融实验
-    'ABLATION_MODELS', 'N_FOLDS',
+    'ABLATION_MODELS', 'ABLATION_CONFIGS_EXTENDED', 'N_FOLDS',
     # 随机种子
     'RANDOM_SEED',
 ]

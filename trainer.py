@@ -1093,7 +1093,11 @@ def train_model(
     model_name: str,
     epochs: int = EPOCHS,
     class_weights: Optional[Dict[int, float]] = None,
-    use_advanced_training: bool = True
+    use_advanced_training: bool = True,
+    use_mixup: Optional[bool] = None,
+    use_cutmix: Optional[bool] = None,
+    use_ema: Optional[bool] = None,
+    label_smoothing: Optional[float] = None
 ) -> Tuple[Any, float]:
     """
     训练模型
@@ -1107,16 +1111,31 @@ def train_model(
         epochs: 训练轮数
         class_weights: 类别权重
         use_advanced_training: 是否使用高级训练技术
+        use_mixup: 是否使用Mixup (None=使用全局配置)
+        use_cutmix: 是否使用CutMix (None=使用全局配置)
+        use_ema: 是否使用EMA (None=使用全局配置)
+        label_smoothing: 标签平滑系数 (None=使用全局配置)
 
     Returns:
         Tuple: (history, training_time)
     """
     if use_advanced_training:
+        # 构建AdvancedTrainer参数，仅传递显式指定的参数
+        trainer_kwargs = {
+            'model': model,
+            'model_name': model_name,
+        }
+        if use_mixup is not None:
+            trainer_kwargs['use_mixup'] = use_mixup
+        if use_cutmix is not None:
+            trainer_kwargs['use_cutmix'] = use_cutmix
+        if use_ema is not None:
+            trainer_kwargs['use_ema'] = use_ema
+        if label_smoothing is not None:
+            trainer_kwargs['label_smoothing'] = label_smoothing
+
         # 使用高级训练器
-        trainer = AdvancedTrainer(
-            model=model,
-            model_name=model_name
-        )
+        trainer = AdvancedTrainer(**trainer_kwargs)
         return trainer.train(
             train_generator=train_generator,
             val_generator=val_generator,
@@ -1534,11 +1553,12 @@ def compile_model_with_focal_loss(
     learning_rate: float = LEARNING_RATE,
     use_focal_loss: bool = False,
     focal_gamma: float = 2.0,
-    focal_alpha: float = 0.25
+    focal_alpha: float = 0.25,
+    label_smoothing: float = 0.0
 ) -> Model:
     """
-    编译模型，可选择使用Focal Loss
-    Compile model with optional Focal Loss
+    编译模型，可选择使用Focal Loss或Label Smoothing
+    Compile model with optional Focal Loss or Label Smoothing
 
     Args:
         model: Keras模型
@@ -1546,12 +1566,19 @@ def compile_model_with_focal_loss(
         use_focal_loss: 是否使用Focal Loss
         focal_gamma: Focal Loss的gamma参数
         focal_alpha: Focal Loss的alpha参数
+        label_smoothing: 标签平滑系数 (0=不平滑)
 
     Returns:
         model: 编译后的模型
     """
-    loss_fn = FocalLoss(gamma=focal_gamma, alpha=focal_alpha) if use_focal_loss \
-              else 'categorical_crossentropy'
+    if use_focal_loss:
+        loss_fn = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
+    elif label_smoothing > 0:
+        loss_fn = tf.keras.losses.CategoricalCrossentropy(
+            label_smoothing=label_smoothing
+        )
+    else:
+        loss_fn = 'categorical_crossentropy'
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
@@ -1565,6 +1592,8 @@ def compile_model_with_focal_loss(
 
     if use_focal_loss:
         logger.info(f"使用 Focal Loss (gamma={focal_gamma}, alpha={focal_alpha})")
+    elif label_smoothing > 0:
+        logger.info(f"使用 Categorical Crossentropy + Label Smoothing ({label_smoothing})")
     else:
         logger.info("使用 Categorical Crossentropy Loss")
 

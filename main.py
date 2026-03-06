@@ -68,6 +68,7 @@ setup_gpu()
 from config import (
     DATA_DIR, OUTPUT_DIR, MODEL_DIR,
     EPOCHS, MODELS_TO_COMPARE, ABLATION_MODELS,
+    ABLATION_CONFIGS_EXTENDED,
     ensure_dir
 )
 
@@ -99,6 +100,7 @@ from evaluation import (
     plot_training_curves,
     measure_inference_time,
     compare_models,
+    plot_ablation_results,
     plot_per_class_metrics,
     visualize_predictions,
     generate_latex_table,
@@ -514,6 +516,184 @@ def run_ablation_study(
             print(f"  Baseline: {baseline['accuracy']:.4f}")
             print(f"  Proposed: {proposed['accuracy']:.4f}")
             print(f"  提升: {(proposed['accuracy'] - baseline['accuracy']):.4f}")
+
+    # 保存结果并生成可视化
+    if ablation_results:
+        plot_ablation_results(ablation_results)
+
+    return ablation_results
+
+
+def run_extended_ablation_study(
+    data_dir: str,
+    epochs: int = EPOCHS,
+    ablation_configs: Optional[List[Dict[str, Any]]] = None
+) -> List[Dict[str, Any]]:
+    """
+    扩展消融实验：验证所有组件（CBAM/SE-Net/Focal Loss/Label Smoothing/Mixup/EMA）的贡献
+    Extended Ablation Study: Verify the contribution of all components
+
+    Args:
+        data_dir: 数据目录
+        epochs: 训练轮数
+        ablation_configs: 消融实验配置字典列表
+
+    Returns:
+        list: 消融实验结果列表
+    """
+    if ablation_configs is None:
+        ablation_configs = ABLATION_CONFIGS_EXTENDED
+
+    print("\n" + "=" * 70)
+    print("扩展消融实验 (Extended Ablation Study)")
+    print("验证各组件的边际贡献: CBAM, SE-Net, Focal Loss, Label Smoothing, Mixup/CutMix, EMA")
+    print("=" * 70)
+
+    # 准备数据
+    split_dir = os.path.join(data_dir, 'split')
+    if not os.path.exists(os.path.join(split_dir, 'train')):
+        print("划分数据集...")
+        try:
+            create_data_split(data_dir, split_dir)
+        except DatasetError as e:
+            logger.error(f"数据集划分失败: {e}")
+            raise
+
+    # 创建数据生成器
+    train_generator, val_generator, test_generator = create_data_generators(split_dir)
+    class_weights = get_class_weights(train_generator)
+
+    ablation_results = []
+
+    for i, config in enumerate(ablation_configs):
+        model_name = config['model']
+        use_focal_loss = config['focal_loss']
+        label_smoothing = config.get('label_smoothing', 0.0)
+        use_mixup = config.get('use_mixup', False)
+        use_ema = config.get('use_ema', False)
+        config_name = config['name']
+
+        print(f"\n{'=' * 70}")
+        print(f"配置 [{i + 1}/{len(ablation_configs)}]: {config_name}")
+        print(f"  模型: {model_name}")
+        print(f"  Focal Loss: {'是' if use_focal_loss else '否'}")
+        print(f"  Label Smoothing: {label_smoothing}")
+        print(f"  Mixup/CutMix: {'是' if use_mixup else '否'}")
+        print(f"  EMA: {'是' if use_ema else '否'}")
+        print(f"{'=' * 70}")
+
+        try:
+            # 1. 构建模型
+            model = build_model(model_name)
+
+            # 2. 编译模型
+            model = compile_model_with_focal_loss(
+                model,
+                use_focal_loss=use_focal_loss,
+                label_smoothing=label_smoothing
+            )
+
+            # 3. 训练模型（传递消融开关）
+            history, training_time = train_model(
+                model, train_generator, val_generator,
+                model_name=f"ablation_{config_name.replace(' ', '_').replace('/', '_')}",
+                epochs=epochs,
+                class_weights=class_weights,
+                use_mixup=use_mixup,
+                use_cutmix=use_mixup,  # Mixup和CutMix绑定
+                use_ema=use_ema,
+                label_smoothing=label_smoothing
+            )
+
+            # 4. 评估模型
+            eval_results = evaluate_model(model, test_generator, config_name)
+
+            # 5. 可视化
+            safe_name = config_name.replace(' ', '_').replace('/', '_')
+            plot_confusion_matrix(
+                eval_results['y_true'],
+                eval_results['y_pred'],
+                eval_results['class_names'],
+                f"ablation_{safe_name}"
+            )
+
+            plot_training_curves(
+                history,
+                f"ablation_{safe_name}"
+            )
+
+            # 6. Grad-CAM可视化（如果是注意力模型）
+            if 'CBAM' in model_name or 'SE' in model_name:
+                try:
+                    visualize_gradcam(
+                        model,
+                        test_generator,
+                        eval_results['class_names'],
+                        f"ablation_{safe_name}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Grad-CAM可视化失败: {e}")
+
+            # 记录结果
+            ablation_results.append({
+                'configuration': config_name,
+                'model_name': model_name,
+                'use_focal_loss': use_focal_loss,
+                'label_smoothing': label_smoothing,
+                'use_mixup': use_mixup,
+                'use_ema': use_ema,
+                'accuracy': eval_results['accuracy'],
+                'precision': eval_results['precision'],
+                'recall': eval_results['recall'],
+                'f1_score': eval_results['f1_score'],
+                'training_time_min': training_time / 60.0
+            })
+
+            # 重置生成器
+            train_generator.reset()
+            val_generator.reset()
+            test_generator.reset()
+
+            # 清理内存
+            cleanup_memory(model)
+
+        except Exception as e:
+            logger.error(f"配置 {config_name} 实验失败: {e}")
+            continue
+
+    # 打印消融实验结果汇总
+    print("\n" + "=" * 80)
+    print("扩展消融实验结果汇总 (Extended Ablation Study Results)")
+    print("=" * 80)
+    print(f"{'Configuration':<30} {'Accuracy':<10} {'Precision':<10} "
+          f"{'Recall':<10} {'F1-Score':<10} {'Time(min)':<10}")
+    print("-" * 80)
+    for r in ablation_results:
+        print(f"{r['configuration']:<30} {r['accuracy']:.4f}     "
+              f"{r['precision']:.4f}     {r['recall']:.4f}     "
+              f"{r['f1_score']:.4f}     {r['training_time_min']:.1f}")
+    print("=" * 80)
+
+    # 生成可视化和保存结果
+    if ablation_results:
+        plot_ablation_results(ablation_results)
+
+    # 统计分析
+    if len(ablation_results) >= 2:
+        baseline = next((r for r in ablation_results
+                         if r['configuration'] == 'Baseline'), None)
+        proposed = next((r for r in ablation_results
+                         if 'Full' in r['configuration'] or 'Proposed' in r['configuration']), None)
+
+        if baseline and proposed:
+            print(f"\n{'=' * 60}")
+            print("总结: Baseline vs Full Proposed")
+            print(f"{'=' * 60}")
+            for metric in ['accuracy', 'precision', 'recall', 'f1_score']:
+                delta = proposed[metric] - baseline[metric]
+                print(f"  {metric:<12}: {baseline[metric]:.4f} → "
+                      f"{proposed[metric]:.4f} ({delta:+.4f}, {delta/baseline[metric]:+.2%})")
+            print(f"{'=' * 60}")
 
     return ablation_results
 
