@@ -57,6 +57,14 @@
    - 支持多模型对比
    - 自动计算p值和统计量
 
+3. **消融实验专用可视化**:
+   - `plot_ablation_results()`: 一键生成消融实验全部图表
+   - 分组柱状图（Accuracy + F1 对比）
+   - 增量贡献瀑布图（各组件相对 Baseline 的提升）
+   - 雷达图（Baseline vs 最佳单因素 vs Full Proposed）
+   - LaTeX 消融表格（booktabs 格式，可直接粘贴到论文）
+   - 结果保存为 CSV + JSON
+
 #### 现有功能
 - ✅ 混淆矩阵 (归一化 + 原始)
 - ✅ 训练曲线 (Accuracy + Loss)
@@ -79,7 +87,7 @@
    ]
    ```
 
-2. **消融实验配置**:
+2. **基础消融实验配置（4组）**:
    ```python
    ABLATION_MODELS = [
        ('MobileNetV2', False, 'Baseline'),
@@ -89,7 +97,22 @@
    ]
    ```
 
-3. **交叉验证参数**:
+3. **扩展消融实验配置（9组，覆盖全部训练技术）**:
+   ```python
+   ABLATION_CONFIGS_EXTENDED = [
+       Baseline,                # MobileNetV2 无增强
+       + CBAM,                  # 注意力机制 - CBAM
+       + SE-Net,                # 注意力机制 - SE-Net（对比）
+       + Focal Loss,            # 损失函数优化
+       + Label Smoothing,       # 标签平滑正则化
+       + Mixup/CutMix,          # 高级数据增强
+       + EMA,                   # 指数移动平均
+       + CBAM + Focal Loss,     # 双因素组合
+       Full Proposed,           # 全部组件组合
+   ]
+   ```
+
+4. **交叉验证参数**:
    ```python
    N_FOLDS = 5  # K折交叉验证
    ```
@@ -97,14 +120,24 @@
 ### 5. main.py - 实验流程完善 ✅
 
 #### 新增功能
-1. **消融实验函数**:
-   - `run_ablation_study()`: 完整的消融实验流程
-   - 验证CBAM和Focal Loss各自的贡献
-   - 自动生成对比结果表格
-   - 集成Grad-CAM可视化
+1. **基础消融实验函数**:
+   - `run_ablation_study()`: CBAM + Focal Loss 的 4 组消融实验
+   - 自动保存结果并调用 `plot_ablation_results()` 生成可视化
+
+2. **扩展消融实验函数**:
+   - `run_extended_ablation_study()`: 全部训练技术的 9 组消融实验
+   - 支持字典格式配置，显式控制各训练技术的开关
+   - 自动生成增量贡献分析（Baseline vs Full Proposed）
+   - 集成 Grad-CAM 可视化（CBAM/SE-Net 模型自动生成）
+
+3. **命令行入口**:
+   - `python main.py` → 标准对比实验（默认）
+   - `python main.py --ablation` → 扩展消融实验
+   - `python main.py --quick` → 快速测试
+   - `python main.py --paper` → 调用论文结果生成脚本
 
 #### 实验流程
-1. 数据准备 → 2. 模型训练 → 3. 性能评估 → 4. Grad-CAM可视化 → 5. 结果汇总
+1. 数据准备 → 2. 模型训练 → 3. 性能评估 → 4. Grad-CAM可视化 → 5. 结果汇总 → 6. 图表/LaTeX生成
 
 ## 技术亮点（论文可用）
 
@@ -124,9 +157,10 @@
 - **价值**: 增强模型可信度和可解释性
 
 ### 4. 实验严谨性 (Experimental Rigor)
-- **消融实验**: 验证各组件的独立贡献
+- **扩展消融实验**: 9组配置验证每个组件的边际贡献（CBAM/SE-Net/Focal Loss/Label Smoothing/Mixup/EMA）
 - **统计检验**: 证明改进的显著性
 - **交叉验证**: 保证结果的可靠性
+- **论文结果一键生成**: `generate_paper_results.py` 自动生成全部图表和LaTeX表格
 
 ### 5. 模型多样性 (Model Diversity)
 - 5个不同架构的模型对比
@@ -181,17 +215,35 @@ python main.py
 ```
 运行5个模型的完整对比实验。
 
-### 2. 消融实验
+### 2. 基础消融实验（4组配置）
 ```python
 from main import run_ablation_study
-
 results = run_ablation_study('./data/garbage_classification', epochs=30)
 ```
 
-### 3. 快速测试
+### 3. 扩展消融实验（9组配置，推荐用于论文）
+```bash
+python main.py --ablation
+```
+或在代码中调用：
+```python
+from main import run_extended_ablation_study
+results = run_extended_ablation_study('./data/garbage_classification', epochs=30)
+```
+
+### 4. 一键生成论文全部结果（推荐）
+```bash
+python generate_paper_results.py --data_dir ./data/garbage_classification --epochs 30
+```
+自动运行所有实验并生成论文所需的全部图表、LaTeX表格、数据文件到 `outputs/paper/` 目录。
+
+### 5. 快速测试
+```bash
+python main.py --quick
+```
+或：
 ```python
 from main import run_quick_test
-
 results = run_quick_test(epochs=3)  # 快速验证功能
 ```
 
@@ -223,18 +275,24 @@ results = run_quick_test(epochs=3)  # 快速验证功能
 | 文件 | 状态 | 主要修改 |
 |------|------|----------|
 | models.py | ✅ | +DenseNet121, +EfficientNetB0 |
-| trainer.py | ✅ | +Focal Loss, +交叉验证 |
-| evaluation.py | ✅ | +Grad-CAM, +统计检验 |
-| config.py | ✅ | +模型列表, +消融配置 |
-| main.py | ✅ | +消融实验流程 |
+| trainer.py | ✅ | +Focal Loss, +交叉验证, +label_smoothing编译支持, +train_model可选参数 |
+| evaluation.py | ✅ | +Grad-CAM, +统计检验, +plot_ablation_results()消融可视化 |
+| config.py | ✅ | +模型列表, +ABLATION_MODELS(4组), +ABLATION_CONFIGS_EXTENDED(9组) |
+| main.py | ✅ | +run_ablation_study(), +run_extended_ablation_study(), +argparse入口 |
+| generate_paper_results.py | ✅ | **新文件** - 一键生成论文全部图表/LaTeX/数据 |
 
 ## 预期性能提升
 
 基于文献和经验值：
 - **MobileNetV2 Baseline**: ~92%
 - **+ CBAM**: +1-2% (注意力机制)
+- **+ SE-Net**: +0.5-1.5% (通道注意力，对比参照)
 - **+ Focal Loss**: +0.5-1% (类别平衡)
+- **+ Label Smoothing**: +0.3-0.8% (防止过度自信)
+- **+ Mixup/CutMix**: +0.5-1% (数据增强正则化)
+- **+ EMA**: +0.2-0.5% (权重平滑)
 - **+ CBAM + Focal Loss**: +2-3% (协同效果)
+- **Full Proposed (全部组件)**: +3-5% (预期最优)
 
 ## 后续工作建议
 
@@ -247,9 +305,11 @@ results = run_quick_test(epochs=3)  # 快速验证功能
 
 本次优化全面提升了项目的学术价值和工程质量：
 - ✅ 添加了3个技术创新点（CBAM, Focal Loss, Grad-CAM）
-- ✅ 完善了实验设计（消融实验、统计检验）
+- ✅ 完善了实验设计（9组扩展消融实验、统计检验）
 - ✅ 增强了可解释性（Grad-CAM可视化）
 - ✅ 扩展了模型对比（5个模型）
+- ✅ 提供了论文结果一键生成工具（`generate_paper_results.py`）
+- ✅ 消融实验覆盖全部训练技术（CBAM/SE-Net/Focal Loss/Label Smoothing/Mixup/EMA）
 - ✅ 保持了代码质量和可维护性
 
 项目现已达到区域性EI会议的发表标准！

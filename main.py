@@ -21,6 +21,7 @@ Main Experiment Script - Intelligent Waste Classification System
 
 import os
 import sys
+import argparse
 import logging
 import warnings
 from typing import Dict, List, Any, Tuple, Optional
@@ -768,5 +769,54 @@ def main() -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any
         sys.exit(1)
 
 
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description='智能垃圾分类系统 - 实验运行入口',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用示例:
+  python main.py                    # 标准对比实验（默认）
+  python main.py --ablation         # 扩展消融实验（9组配置）
+  python main.py --quick            # 快速测试（3 epochs）
+  python main.py --paper            # 一键生成论文全部结果
+  python main.py --epochs 50        # 自定义训练轮数
+  python main.py --data_dir ./data  # 自定义数据路径
+        """
+    )
+    parser.add_argument('--ablation', action='store_true',
+                        help='运行扩展消融实验（9组配置，覆盖全部训练技术）')
+    parser.add_argument('--quick', action='store_true',
+                        help='快速测试模式（3 epochs，仅 MobileNetV2）')
+    parser.add_argument('--paper', action='store_true',
+                        help='一键生成论文全部结果（调用 generate_paper_results.py）')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='训练轮数（覆盖配置文件中的默认值）')
+    parser.add_argument('--data_dir', type=str, default=None,
+                        help='数据集目录路径（覆盖配置文件中的默认值）')
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    results = main()
+    args = parse_args()
+
+    data_dir = args.data_dir or DATA_DIR
+    epochs = args.epochs or EPOCHS
+
+    if args.paper:
+        # 调用论文结果生成脚本
+        print("启动论文结果生成脚本...")
+        cmd = f'{sys.executable} generate_paper_results.py --data_dir {data_dir} --epochs {epochs}'
+        os.system(cmd)
+    elif args.ablation:
+        # 扩展消融实验
+        if not check_dataset(data_dir):
+            print("\n请按照说明下载数据集后重新运行程序。")
+            sys.exit(1)
+        results = run_extended_ablation_study(data_dir, epochs=epochs)
+    elif args.quick:
+        # 快速测试
+        results = run_quick_test(data_dir, epochs=args.epochs or 3)
+    else:
+        # 标准对比实验（默认）
+        results = main()

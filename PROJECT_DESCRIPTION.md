@@ -355,9 +355,11 @@ run_all_experiments(data_dir, epochs=30)
 
 ### 5.2 实验二：消融实验（Ablation Study）
 
-**目的**：验证 CBAM 注意力机制和 Focal Loss 各自的独立贡献。
+**目的**：验证各改进组件（注意力机制、损失函数、数据增强、训练策略）各自的独立贡献和协同效果。
 
-**实验配置**：
+#### 5.2.1 基础消融实验（4组配置）
+
+验证核心创新点 CBAM 和 Focal Loss：
 
 | 配置名称 | 基础模型 | CBAM | Focal Loss | 说明 |
 |----------|----------|------|------------|------|
@@ -366,15 +368,43 @@ run_all_experiments(data_dir, epochs=30)
 | + Focal Loss | MobileNetV2 | ✗ | ✓ | 仅使用 Focal Loss |
 | + CBAM + Focal Loss (Proposed) | MobileNetV2_CBAM | ✓ | ✓ | 完整方案 |
 
+#### 5.2.2 扩展消融实验（9组配置，推荐用于论文）
+
+覆盖全部训练技术的完整消融：
+
+| # | 配置名称 | 模型 | Focal Loss | Label Smoothing | Mixup/CutMix | EMA | 消融维度 |
+|---|----------|------|------------|-----------------|--------------|-----|----------|
+| 1 | Baseline | MobileNetV2 | ✗ | 0.0 | ✗ | ✗ | 基线 |
+| 2 | + CBAM | MobileNetV2_CBAM | ✗ | 0.0 | ✗ | ✗ | 注意力机制 |
+| 3 | + SE-Net | MobileNetV2_SE | ✗ | 0.0 | ✗ | ✗ | 注意力对比 |
+| 4 | + Focal Loss | MobileNetV2 | ✓ | 0.0 | ✗ | ✗ | 损失函数 |
+| 5 | + Label Smoothing | MobileNetV2 | ✗ | 0.1 | ✗ | ✗ | 正则化 |
+| 6 | + Mixup/CutMix | MobileNetV2 | ✗ | 0.0 | ✓ | ✗ | 数据增强 |
+| 7 | + EMA | MobileNetV2 | ✗ | 0.0 | ✗ | ✓ | 训练策略 |
+| 8 | + CBAM + Focal Loss | MobileNetV2_CBAM | ✓ | 0.0 | ✗ | ✗ | 双因素组合 |
+| 9 | Full Proposed | MobileNetV2_CBAM | ✓ | 0.1 | ✓ | ✓ | 全部组件 |
+
 **预期结论**：
 - Baseline ~92%
-- +CBAM 提升约 1-2%
-- +Focal Loss 提升约 0.5-1%
-- +Both 协同提升约 2-3%
+- 单因素最大提升: CBAM +1-2%
+- Full Proposed 协同提升约 3-5%
+- CBAM > SE-Net（CBAM 包含空间注意力，更全面）
+
+**自动输出**：
+- 分组柱状图（Accuracy + F1 对比）
+- 增量贡献瀑布图（各组件 ΔAccuracy）
+- 雷达图（Baseline vs Best Single vs Full Proposed）
+- LaTeX 消融表格（booktabs 格式）
+- CSV + JSON 结果文件
 
 **执行方式**：
+```bash
+python main.py --ablation
+```
+或：
 ```python
-run_ablation_study(data_dir, epochs=30)
+from main import run_extended_ablation_study
+results = run_extended_ablation_study(data_dir, epochs=30)
 ```
 
 ### 5.3 实验三：统计显著性检验
@@ -460,10 +490,18 @@ run_ablation_study(data_dir, epochs=30)
 - **Grad-CAM 热力图**：叠加到原图上，展示模型关注区域
 - **注意力权重可视化**：通道注意力柱状图、空间注意力热力图
 
-### 7.5 论文导出
+### 7.5 消融实验可视化
 
-- `generate_latex_table()`：自动生成 LaTeX 格式的对比结果表格
-- 所有图表以 150 DPI 的 PNG 格式保存，适合论文插图
+- **消融对比柱状图**：各配置的 Accuracy + F1 分组柱状图
+- **增量贡献瀑布图**：各组件相对 Baseline 的 ΔAccuracy 百分比
+- **雷达图**：Baseline / 最佳单因素 / Full Proposed 的多指标对比
+
+### 7.6 论文导出
+
+- `generate_latex_table()`：自动生成 LaTeX 格式的模型对比表格
+- `plot_ablation_results()`：自动生成消融实验 LaTeX 表格（booktabs 格式）
+- `generate_paper_results.py`：一键生成论文全部图表到 `outputs/paper/` 目录
+- 所有图表以 300 DPI 的 PNG 格式保存，满足 EI 论文插图要求
 
 ---
 
@@ -493,8 +531,8 @@ run_ablation_study(data_dir, epochs=30)
 ```
 项目根目录/
 │
-├── config.py                  # [210行] 全局配置中心
-│   └── 所有超参数、路径、模型配置、消融实验配置
+├── config.py                  # [268行] 全局配置中心
+│   └── 所有超参数、路径、模型配置、消融实验配置(4组+9组扩展)
 │
 ├── data_loader.py             # [426行] 数据处理
 │   ├── 数据集下载引导
@@ -521,12 +559,13 @@ run_ablation_study(data_dir, epochs=30)
 │   ├── K 折交叉验证
 │   └── 结果保存与内存管理
 │
-├── evaluation.py              # [882行] 评估与可视化
+├── evaluation.py              # [1074行] 评估与可视化
 │   ├── 模型评估（Acc/P/R/F1）
 │   ├── 混淆矩阵绘制
 │   ├── 训练曲线绘制
 │   ├── 推理速度测试
 │   ├── 模型对比表格与图表
+│   ├── 消融实验专用可视化 plot_ablation_results()
 │   ├── 每类别指标可视化
 │   ├── Grad-CAM 可视化
 │   ├── 统计显著性检验
@@ -539,12 +578,20 @@ run_ablation_study(data_dir, epochs=30)
 │   ├── WeightOptimizer
 │   └── CyclicLearningRate
 │
-├── main.py                    # [592行] 主实验脚本
+├── main.py                    # [800行] 主实验脚本
 │   ├── GPU 配置
-│   ├── run_single_experiment()    单模型实验
-│   ├── run_all_experiments()      全模型对比实验
-│   ├── run_ablation_study()       消融实验
-│   └── run_quick_test()           快速测试
+│   ├── run_single_experiment()         单模型实验
+│   ├── run_all_experiments()           全模型对比实验
+│   ├── run_ablation_study()            基础消融实验（4组）
+│   ├── run_extended_ablation_study()   扩展消融实验（9组）
+│   ├── run_quick_test()                快速测试
+│   └── argparse 命令行入口            支持 --ablation/--quick/--paper
+│
+├── generate_paper_results.py  # [新] 论文结果一键生成脚本
+│   ├── 模型对比实验 → 表格/图表
+│   ├── 扩展消融实验 → 消融图表/LaTeX
+│   ├── Grad-CAM 可解释性分析
+│   └── 输出到 outputs/paper/ 目录
 │
 ├── download_data.py           # [445行] 数据集下载脚本
 ├── quick_test.py              # [236行] 环境验证脚本
