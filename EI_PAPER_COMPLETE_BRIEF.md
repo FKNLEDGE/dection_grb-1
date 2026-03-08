@@ -52,6 +52,9 @@ Global Average Pooling
 Dropout(0.5) → Dense(256, ReLU) → Dropout(0.25)
     ↓
 Dense(12, Softmax)  →  分类输出
+
+注：此为 Proposed Method (MobileNetV2_CBAM) 的架构。
+Baseline MobileNetV2 无 CBAM 模块，且 Dense 层为 128 单元而非 256。
 ```
 
 #### 1.3.2 MobileNetV2 Backbone
@@ -89,14 +92,29 @@ $$M_s(F') = \sigma(f^{7\times7}([AvgPool(F'); MaxPool(F')]))$$
 
 #### 1.3.4 分类头设计
 
+**注意：不同模型使用不同的分类头配置**（详见 `config.py` MODEL_HEAD_CONFIG）：
+
 ```python
-# CBAM模型的分类头
-Dropout(0.5)  →  Dense(256, ReLU)  →  Dropout(0.25)  →  Dense(12, Softmax)
+# MobileNetV2_CBAM（Proposed Method）的分类头
+GAP → Dropout(0.5) → Dense(256, ReLU) → Dropout(0.25) → Dense(12, Softmax)
+
+# Baseline MobileNetV2 的分类头（与 CBAM 模型不同！）
+GAP → Dropout(0.5) → Dense(128, ReLU) → Dropout(0.25) → Dense(12, Softmax)
 ```
 
+各模型分类头全连接层配置：
+
+| 模型 | Dense 层 | Dropout |
+|------|----------|---------|
+| MobileNetV2 (Baseline) | Dense(128) | 0.5, 0.25 |
+| MobileNetV2_CBAM | Dense(256) | 0.5, 0.25 |
+| VGG16 | Dense(512) → Dense(256) | 0.5, 0.25, 0.25 |
+| DenseNet121 | Dense(256) | 0.5, 0.25 |
+| EfficientNetB0 | Dense(128) | 0.5, 0.25 |
+
 - 使用两层 Dropout 防止过拟合
-- 全连接层 256 单元作为特征映射
 - Softmax 输出 12 类概率分布
+- **论文写作时注意**：消融实验中 Baseline（Dense(128)）与 +CBAM（Dense(256)）的 FC 层不同，论文中应在 Implementation Details 中说明此差异
 
 ---
 
@@ -184,8 +202,10 @@ $$\theta_{EMA} = \beta \cdot \theta_{EMA} + (1 - \beta) \cdot \theta$$
 所有模型统一使用：
 - ImageNet 预训练 + 冻结 Backbone
 - 相同的数据增强策略
-- 相同的训练超参数（lr、epochs、batch_size等）
-- 相同的数据划分
+- 相同的训练超参数（lr=0.001、epochs=30、batch_size=32、optimizer=Adam）
+- 相同的数据划分（8:1:1）
+
+**注意**：各模型的分类头（全连接层）配置不同（详见 1.3.4 节），这是各模型在原始论文中推荐的标准配置。论文写作中应在 Implementation Details 说明此设计选择。
 
 #### 1.6.2 消融实验（9组配置）
 
@@ -517,10 +537,10 @@ References (15-20 references)
 }
 
 % 训练技术
-@article{zhang2018mixup,
+@inproceedings{zhang2018mixup,
   title={mixup: Beyond Empirical Risk Minimization},
   author={Zhang, Hongyi and Cisse, Moustapha and Dauphin, Yann N and Lopez-Paz, David},
-  journal={ICLR},
+  booktitle={ICLR},
   year={2018}
 }
 
@@ -531,20 +551,18 @@ References (15-20 references)
   year={2019}
 }
 
-@article{szegedy2016rethinking,
+@inproceedings{szegedy2016rethinking,
   title={Rethinking the Inception Architecture for Computer Vision},
   author={Szegedy, Christian and Vanhoucke, Vincent and Ioffe, Sergey and Shlens, Jon and Wojna, Zbigniew},
-  journal={CVPR},
-  year={2016},
-  note={Label Smoothing 首次提出}
+  booktitle={CVPR},
+  year={2016}
 }
 
 @inproceedings{loshchilov2017sgdr,
   title={SGDR: Stochastic Gradient Descent with Warm Restarts},
   author={Loshchilov, Ilya and Hutter, Frank},
   booktitle={ICLR},
-  year={2017},
-  note={Cosine Annealing 学习率调度}
+  year={2017}
 }
 
 % 可解释性
@@ -556,10 +574,10 @@ References (15-20 references)
 }
 
 % 迁移学习
-@article{deng2009imagenet,
+@inproceedings{deng2009imagenet,
   title={ImageNet: A large-scale hierarchical image database},
   author={Deng, Jia and Dong, Wei and Socher, Richard and Li, Li-Jia and Li, Kai and Fei-Fei, Li},
-  journal={CVPR},
+  booktitle={CVPR},
   year={2009}
 }
 
